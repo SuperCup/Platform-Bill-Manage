@@ -2,19 +2,109 @@ import { DATA } from '../shared/data.js';
 import { escapeHtml, formatMoney } from '../shared/format.js';
 import { Table, pill } from '../shared/ui.js';
 import { getQueryParams } from '../shared/router.js';
-import { getPrimaryProjectId, isRecordFinanceLocked } from './financeRules.js';
+import {
+  getPrimaryProjectId,
+  isRecordFinanceLocked,
+  getRecordAllocatedCost,
+} from './financeRules.js';
+
+export const ALLOWED_BIZ_CUSTOMERS = ['康师傅方便面', '屈臣氏饮料'];
 
 export const BILL_TYPES    = ['新增', '追加'];
-export const BILL_STATUSES = ['编辑中', '已同步'];
+export const BILL_STATUSES = ['新增', '编辑中', '已同步'];
+
+/** 业务账单 ID 比较（dataset 为字符串，data 里多为数字） */
+export function billIdEq(a, b) {
+  if (a == null || b == null) return a == null && b == null;
+  return Number(a) === Number(b);
+}
+
+/** 客户名归一化（仅保留康师傅方便面、屈臣氏饮料） */
+export function normCustomer(c) {
+  const s = String(c || '').trim();
+  if (!s) return s;
+  if (s.includes('康师傅')) return '康师傅方便面';
+  if (s.includes('屈臣氏')) return '屈臣氏饮料';
+  return s;
+}
+
+export function isAllowedBizCustomer(c) {
+  return ALLOWED_BIZ_CUSTOMERS.includes(normCustomer(c));
+}
+
+export function customerMatches(a, b) {
+  const na = normCustomer(a);
+  const nb = normCustomer(b);
+  if (!na || !nb) return false;
+  return na === nb;
+}
 
 /** 计算某业务账单关联的成本记录列表 */
 export function getLinkedCostRecords(billId) {
-  return DATA.retail.costRecords.filter(r => r.linkedBizBillId === billId);
+  return DATA.retail.costRecords.filter((r) => billIdEq(r.linkedBizBillId, billId));
+}
+
+/** 成本单对本账单可划拨的上限 */
+export function costTransferableMax(record, billId) {
+  const claimed = record.claimed || 0;
+  const actual = record.actual || 0;
+  if (billIdEq(record.linkedBizBillId, billId)) return Math.max(0, actual - claimed);
+  if (record.linkedBizBillId == null) return Math.max(0, actual - claimed);
+  return claimed;
+}
+
+/** 「新增成本单」— 从成本管理可选列表 */
+export function getCostSourcesForBillAdd(bizBill, billId) {
+  return DATA.retail.costRecords.filter((r) => {
+    if (isRecordFinanceLocked(r)) return false;
+    if (!customerMatches(r.customer, bizBill.customer)) return false;
+    if (billIdEq(r.linkedBizBillId, billId)) {
+      return costTransferableMax(r, billId) > 0.01;
+    }
+    return costTransferableMax(r, billId) > 0.01;
+  });
+}
+
+/** 「新增成本单」— 从其他业务账单可选列表 */
+export function getBillSourcesForCostAdd(bizBill, billId) {
+  return DATA.retail.bizBills.filter(
+    (b) =>
+      customerMatches(b.customer, bizBill.customer) &&
+      !billIdEq(b.id, billId) &&
+      b.status !== '已同步' &&
+      getLinkedCostTotal(b.id) > 0
+  );
 }
 
 /** 业务账单列表「待归集金额」：关联到该账单的成本单认领（分配）金额之和 */
 export function getLinkedCostTotal(billId) {
   return getLinkedCostRecords(billId).reduce((s, r) => s + (r.claimed || 0), 0);
+}
+
+/** 同平台 + 二级实体 + 归属月 唯一键 */
+export function costRecordEntityMonthKey(r) {
+  return `${r.platform}|${r.entity || ''}|${r.month || ''}`;
+}
+
+/** 合并同键多条自动化成本（金额累加，保留首条元数据） */
+export function dedupeCostRecordsByEntityMonth(records) {
+  const map = new Map();
+  for (const r of records) {
+    const key = costRecordEntityMonthKey(r);
+    if (!map.has(key)) {
+      map.set(key, { ...r });
+      continue;
+    }
+    const ex = map.get(key);
+    ex.actual = (ex.actual || 0) + (r.actual || 0);
+    ex.claimed = (ex.claimed || 0) + (r.claimed || 0);
+    ex.riskControlAmount = (ex.riskControlAmount || 0) + (r.riskControlAmount || 0);
+    const mergeProjects = [...(ex.allocDetail?.projects || []), ...(r.allocDetail?.projects || [])];
+    const mergeBills = [...(ex.allocDetail?.bills || []), ...(r.allocDetail?.bills || [])];
+    ex.allocDetail = { projects: mergeProjects, bills: mergeBills };
+    if (!ex.linkedBizBillId && r.linkedBizBillId) ex.linkedBizBillId = r.linkedBizBillId;
+  }
+  return [...map.values()];
 }
 
 /** Excel 补贴合计（新数据结构） */
@@ -33,7 +123,9 @@ export function RetailBillsPage() {
   const fId         = (q.get('bbId')      || '').trim();
   const fPmsId      = (q.get('bbPmsId')   || '').trim();
 
-  let bills = [...DATA.retail.bizBills].sort((a, b) => b.id - a.id);
+  let bills = [...DATA.retail.bizBills]
+    .filter((b) => isAllowedBizCustomer(b.customer))
+    .sort((a, b) => b.id - a.id);
   if (fCust)   bills = bills.filter(b => b.customer.includes(fCust));
   if (fProj)   bills = bills.filter(b => b.project.includes(fProj));
   if (fType)   bills = bills.filter(b => b.billType === fType);
@@ -47,7 +139,7 @@ export function RetailBillsPage() {
     const pendingAgg = getLinkedCostTotal(b.id);
     const ops = `<span class="toolbar" style="gap:4px">
       <a class="link" data-action="openBizBillDetail" data-bill-id="${b.id}" style="font-size:13px">详情</a>
-      ${isSynced ? `<a class="link" data-action="bizBillReportCustoms" data-bill-id="${b.id}" style="font-size:13px">报关</a>` : ''}
+      ${isSynced ? `<a class="link" data-action="bizBillReport" data-bill-id="${b.id}" style="font-size:13px">报表</a>` : ''}
     </span>`;
     return [
       ops,
@@ -80,8 +172,9 @@ export function RetailBillsPage() {
         <span style="margin:0 4px;color:var(--border-2)">›</span>
         <span style="color:var(--text)">业务账单</span>
       </div>
-      <div class="toolbar">
-        <button class="btn btn-primary" data-action="createBizBill">创建账单</button>
+      <div class="toolbar" style="gap:8px">
+        <button class="btn" data-action="refreshBizBillsList">刷新</button>
+        <button class="btn btn-primary" data-action="syncFromPms">从 PMS 同步</button>
       </div>
     </div>
 
@@ -92,8 +185,13 @@ export function RetailBillsPage() {
 
             <div class="toolbar">
               <div style="display:flex;align-items:center;gap:5px">
-                <span class="page-subtitle" style="white-space:nowrap;flex-shrink:0">结构客户</span>
-                <input class="input" id="bbf-cust" style="min-width:120px" value="${escapeHtml(fCust)}" placeholder="🔍" />
+                <span class="page-subtitle" style="white-space:nowrap;flex-shrink:0">客户</span>
+                <select class="select" id="bbf-cust" style="min-width:140px">
+                  <option value="">全部</option>
+                  ${ALLOWED_BIZ_CUSTOMERS.map((c) =>
+                    `<option value="${escapeHtml(c)}"${fCust === c ? ' selected' : ''}>${escapeHtml(c)}</option>`
+                  ).join('')}
+                </select>
               </div>
               <div style="display:flex;align-items:center;gap:5px">
                 <span class="page-subtitle" style="white-space:nowrap;flex-shrink:0">项目编号</span>
@@ -168,18 +266,6 @@ export function BizBillDetailHtml(billId) {
       ? `<span class="pill pill-success" style="margin-left:8px">金额匹配</span>`
       : `<span class="pill pill-danger" style="margin-left:8px">金额不匹配</span>`;
 
-  const settleProj = b.project || '';
-  const projRows = linkedRecords.map((r) => {
-    const pid = getPrimaryProjectId(r);
-    const rowMatch = !settleProj ? true : !pid ? false : pid === settleProj;
-    return [escapeHtml(r.id), escapeHtml(pid || '—'), rowMatch ? pill('一致') : pill('不一致')];
-  });
-  const hasProjectMismatch = linkedRecords.some((r) => {
-    const pid = getPrimaryProjectId(r);
-    return settleProj && pid && pid !== settleProj;
-  });
-  const hasMissingProject = linkedRecords.some((r) => (r.claimed || 0) > 0 && !getPrimaryProjectId(r));
-
   // ── 报价组信息 ──
   const qg = b.quoteGroup || {};
   const quotationRows = (qg.quotations || []).map(q => [
@@ -207,17 +293,6 @@ export function BizBillDetailHtml(billId) {
     f.excelSubsidy > 0 ? `<b>${formatMoney(f.excelSubsidy)}</b>` : '—',
   ]);
 
-  // ── 关联成本记录 ──
-  const linkedCostRows = linkedRecords.map(r => [
-    escapeHtml(r.id),
-    escapeHtml(r.month),
-    escapeHtml(r.platform),
-    escapeHtml(r.customer),
-    escapeHtml(r.entity || ''),
-    formatMoney(r.actual),
-    `<b>${formatMoney(r.claimed)}</b>`,
-    pill(r.actual <= r.claimed ? '已分配' : '部分分配'),
-  ]);
 
   return `
     <div style="display:flex;flex-direction:column;gap:12px">
@@ -320,20 +395,17 @@ export function BizBillDetailHtml(billId) {
         </div>
       </div>
 
-      <!-- ⑤ 成本校验 & 调整 -->
+      <!-- ⑤ 成本校验 -->
       <div class="card">
         <div class="card-head" style="font-weight:600">
-          成本校验 &amp; 调整
+          成本校验
           ${hasNoLink
             ? `<span class="pill pill-neutral" style="margin-left:8px">待关联</span>`
             : isMatch
               ? `<span class="pill pill-success" style="margin-left:8px">✓ 匹配</span>`
-              : `<span class="pill pill-danger" style="margin-left:8px">⚠ 差额待调整</span>`}
+              : `<span class="pill pill-danger" style="margin-left:8px">⚠ 差额</span>`}
           <div style="flex:1"></div>
-          ${!isLocked ? `<div style="display:flex;gap:6px">
-            <button class="btn btn-sm" data-action="openBillCostLink" data-bill-id="${b.id}">关联成本单</button>
-            ${!isMatch ? `<button class="btn btn-sm btn-warning" data-action="openBillCostAdjust" data-bill-id="${b.id}">调整差额</button>` : ''}
-          </div>` : ''}
+          ${!isLocked ? `<button class="btn btn-sm" data-action="openBillCostAdd" data-bill-id="${b.id}">新增成本单</button>` : ''}
         </div>
         <div class="card-body">
 
@@ -358,51 +430,26 @@ export function BizBillDetailHtml(billId) {
                   : `成本不足 ${formatMoney(Math.abs(diffAmt))}`}
               </div>
               <div class="cost-match-cell-sub">
-                ${hasNoLink ? '点击右上角「关联成本单」开始'
+                ${hasNoLink ? '点击右上角「新增成本单」开始'
                   : isMatch ? '两端金额一致，可正常提交'
-                  : diffAmt > 0 ? '成本 > 凭证，需转出多余部分'
-                  : '成本 < 凭证，需转入补足差额'}
+                  : diffAmt > 0 ? '成本 > 凭证，可修改已关联成本转出多余部分'
+                  : '成本 < 凭证，新增成本单或修改已关联成本转入补足差额'}
               </div>
             </div>
           </div>
 
-          <!-- 操作指引：仅在金额不匹配时显示 -->
-          ${!isMatch && !hasNoLink ? `
-          <div class="callout callout-warning" style="font-size:13px;margin-bottom:16px">
-            <div class="callout-title">${diffAmt < 0
-              ? `需补入 ${formatMoney(Math.abs(diffAmt))}`
-              : `需转出 ${formatMoney(Math.abs(diffAmt))}`}</div>
-            ${diffAmt < 0
-              ? `凭证要求 <b>${formatMoney(excelTotal)}</b>，当前关联成本 <b>${formatMoney(linkedTotal)}</b>，<b>缺口 ${formatMoney(Math.abs(diffAmt))}</b>。<br>
-                 点击「调整差额」→ 选择"转入" → 从同平台可用成本单中填写转入金额，多条合计须等于缺口。<br>
-                 <span style="color:var(--muted)">可选来源：①未关联任何账单的成本单；②已关联其他账单的成本单（须双方确认后借调）。</span>`
-              : `凭证要求 <b>${formatMoney(excelTotal)}</b>，当前关联成本 <b>${formatMoney(linkedTotal)}</b>，<b>超出 ${formatMoney(Math.abs(diffAmt))}</b>。<br>
-                 点击「调整差额」→ 选择"转出" → 减少某条成本记录的认领金额，合计等于超出额，释放后可重新分配。`}
-          </div>` : ''}
-
-          <!-- 关联成本记录列表 -->
+          <!-- 已关联成本记录列表 -->
           <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">
-            已关联成本记录${isLocked ? '（账单已提交，只读）' : '（可修改认领额或解除关联）'}
+            已关联成本记录${isLocked ? '（账单已提交，只读）' : '（未同步前均可修改或删除关联）'}
           </div>
           ${linkedRecords.length
             ? Table(
-                ['成本记录', '月份', '客户 · 实体', '实际成本', '本单认领', '归集项目', '财务状态', '操作'],
+                ['成本记录', '月份', '客户 · 实体', '实际成本', '已分配成本', '本单关联', '操作'],
                 linkedRecords.map(r => {
-                  const pid = getPrimaryProjectId(r);
-                  const projMatch = settleProj && pid ? pid === settleProj : null;
-                  const projCell = pid
-                    ? `<a class="link" data-action="openProject" data-project="${escapeHtml(pid)}">${escapeHtml(pid)}</a>${
-                        projMatch === true  ? ' <span title="与账单项目一致" style="color:var(--success)">✓</span>'
-                        : projMatch === false ? ' <span title="归集项目不一致，提交前请确认" style="color:var(--danger)">✗</span>'
-                        : ''}`
-                    : '<span style="color:var(--warning)">未归集</span>';
-                  const lockTag = isRecordFinanceLocked(r)
-                    ? `<span class="pill pill-neutral" style="font-size:11px">已锁定</span>`
-                    : `<span style="color:var(--success);font-size:12px">可调整</span>`;
                   const ops = !isLocked
                     ? `<div style="display:flex;gap:5px;white-space:nowrap">
-                        ${!isRecordFinanceLocked(r) ? `<a class="link" data-action="rtlBillAdjustClaimed" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">修改认领</a>` : ''}
-                        <a class="link" style="color:var(--danger)" data-action="rtlBillUnlinkCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">解除</a>
+                        <a class="link" data-action="rtlBillModifyCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">修改</a>
+                        <a class="link" style="color:var(--danger)" data-action="rtlBillDeleteCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">删除</a>
                       </div>`
                     : '—';
                   return [
@@ -410,25 +457,15 @@ export function BizBillDetailHtml(billId) {
                     escapeHtml(r.month),
                     `${escapeHtml(r.customer)}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(r.entity || '')}</span>`,
                     formatMoney(r.actual),
+                    formatMoney(getRecordAllocatedCost(r)),
                     `<b style="color:var(--accent)">${formatMoney(r.claimed)}</b>`,
-                    projCell,
-                    lockTag,
                     ops,
                   ];
                 })
               )
             : `<div style="padding:8px 0;color:var(--muted);font-size:13px">
-                暂未关联成本记录。点击右上角「关联成本单」，从成本管理中选择同平台的月度成本单并填写认领金额。
+                暂未关联成本记录。点击右上角「新增成本单」，从成本管理或其他业务账单中选择并填写划拨金额。
               </div>`}
-
-          <!-- 项目归集不一致提示 -->
-          ${(hasProjectMismatch || hasMissingProject) && linkedRecords.length ? `
-          <div class="callout callout-danger" style="margin-top:12px;font-size:12px">
-            <div class="callout-title">⚠ 归集项目与账单项目不一致</div>
-            账单所属项目：<b>${escapeHtml(settleProj || '—')}</b>。部分成本记录的归集项目与此不同（上表 ✗）。
-            提交后库存扣减与财务成本将按成本记录的归集项目计算，可能导致财务偏差。<br>
-            建议在财务入账月（${escapeHtml(DATA.retail.currentFinanceOperatingMonth || '—')}）发起当期成本调整并保留依据链；不可直接修改已锁定历史月数据。
-          </div>` : ''}
 
         </div>
       </div>

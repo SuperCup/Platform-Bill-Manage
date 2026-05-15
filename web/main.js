@@ -4,10 +4,22 @@ import { closeModal, openModal, toast, callout, Table } from './shared/ui.js';
 import { getRoute, getSubTab, getQueryParams } from './shared/router.js';
 import { DATA } from './shared/data.js';
 import { RetailPage, mergeRetailCostQuery } from './retail/page.js';
-import { BizBillDetailHtml, getLinkedCostRecords, getExcelTotal } from './retail/bills.js';
+import {
+  BizBillDetailHtml,
+  getLinkedCostRecords,
+  getLinkedCostTotal,
+  getExcelTotal,
+  getCostSourcesForBillAdd,
+  getBillSourcesForCostAdd,
+  costTransferableMax,
+  billIdEq,
+  customerMatches,
+  ALLOWED_BIZ_CUSTOMERS,
+} from './retail/bills.js';
 import {
   appendCostChangeAudit,
   isRecordFinanceLocked,
+  isPastFinanceEntryDeadline,
 } from './retail/financeRules.js';
 
 // ── Modal close handlers ────────────────────────────────────────────────────
@@ -104,12 +116,32 @@ function projectOptionsHtml(selectedId) {
     .join('');
 }
 
+function manualCustomerOptionsHtml(selected) {
+  return ALLOWED_BIZ_CUSTOMERS.map(
+    (c) => `<option value="${escapeHtml(c)}"${c === selected ? ' selected' : ''}>${escapeHtml(c)}</option>`
+  ).join('');
+}
+
+function manualEntityDatalistHtml(plat, customer) {
+  const entities = [
+    ...new Set(
+      DATA.retail.costRecords
+        .filter((r) => r.platform === plat && customerMatches(r.customer, customer))
+        .map((r) => r.entity)
+        .filter(Boolean)
+    ),
+  ];
+  return entities.map((e) => `<option value="${escapeHtml(e)}">`).join('');
+}
+
 function buildRtlManualCostModalBody({ plat, entry, months }) {
   const isEdit = !!entry;
   const monthVal = entry?.month || months[0] || getQueryParams().get('rtlManualMonth')?.trim() || '';
   const amtVal = entry != null && entry.amount != null ? String(entry.amount) : '';
   const costType = entry?.costType || '平台账单';
   const projectId = entry?.projectId || '';
+  const customer = entry?.customer || ALLOWED_BIZ_CUSTOMERS[0] || '';
+  const entity = entry?.entity || '';
   const remark = entry?.remark ?? '';
   const vouchers = entry?.vouchers || [];
 
@@ -161,6 +193,15 @@ function buildRtlManualCostModalBody({ plat, entry, months }) {
         ${monthControl}
       </div>
       <div>
+        <div class="page-subtitle" style="margin-bottom:4px">客户名称 <span style="color:var(--danger)">*</span></div>
+        <select class="select" id="rtl-mc-customer" style="width:100%">${manualCustomerOptionsHtml(customer)}</select>
+      </div>
+      <div>
+        <div class="page-subtitle" style="margin-bottom:4px">二级实体 <span style="color:var(--danger)">*</span></div>
+        <input class="input" id="rtl-mc-entity" list="rtl-mc-entity-list" value="${escapeHtml(entity)}" placeholder="与自动化成本二级实体一致" style="width:100%" />
+        <datalist id="rtl-mc-entity-list">${manualEntityDatalistHtml(plat, customer)}</datalist>
+      </div>
+      <div>
         <div class="page-subtitle" style="margin-bottom:4px">成本金额（元） <span style="color:var(--danger)">*</span></div>
         <input class="input" id="rtl-mc-amt" type="number" min="0" step="0.01" value="${escapeHtml(amtVal)}" style="width:100%" />
       </div>
@@ -200,6 +241,8 @@ function summarizeRtlManualEdit(before, after, prevVoucherLen, keptLen, newFileL
   }
   if (before.costType !== after.costType) parts.push(`成本类型 ${before.costType} → ${after.costType}`);
   if (before.projectId !== after.projectId) parts.push(`关联项目 ${before.projectId} → ${after.projectId}`);
+  if (before.customer !== after.customer) parts.push(`客户 ${before.customer} → ${after.customer}`);
+  if (before.entity !== after.entity) parts.push(`二级实体 ${before.entity} → ${after.entity}`);
   if ((before.remark || '') !== (after.remark || '')) {
     parts.push(`备注「${before.remark || '（空）'}」→「${after.remark || '（空）'}」`);
   }
@@ -252,6 +295,8 @@ function openRtlManualCostModalFromClick(hostEl) {
     const costType = document.getElementById('rtl-mc-type')?.value || '';
     const projectId = document.getElementById('rtl-mc-project')?.value?.trim() || '';
     const remark = document.getElementById('rtl-mc-remark')?.value?.trim() || '';
+    const customer = document.getElementById('rtl-mc-customer')?.value?.trim() || '';
+    const entity = document.getElementById('rtl-mc-entity')?.value?.trim() || '';
 
     if (!/^\d{4}-\d{2}$/.test(month)) {
       showMcErr('归属月须为 YYYY-MM 格式。');
@@ -263,6 +308,14 @@ function openRtlManualCostModalFromClick(hostEl) {
     }
     if (!projectId) {
       showMcErr('请选择关联项目。');
+      return;
+    }
+    if (!ALLOWED_BIZ_CUSTOMERS.includes(customer)) {
+      showMcErr('请选择客户名称。');
+      return;
+    }
+    if (!entity) {
+      showMcErr('请填写二级实体。');
       return;
     }
     if (!Number.isFinite(amt) || amt <= 0) {
@@ -300,9 +353,11 @@ function openRtlManualCostModalFromClick(hostEl) {
         amount: entry.amount,
         costType: entry.costType,
         projectId: entry.projectId,
+        customer: entry.customer || '',
+        entity: entry.entity || '',
         remark: entry.remark || '',
       };
-      const after = { month, amount: amt, costType, projectId, remark };
+      const after = { month, amount: amt, costType, projectId, customer, entity, remark };
       const summary = summarizeRtlManualEdit(
         before,
         after,
@@ -315,12 +370,16 @@ function openRtlManualCostModalFromClick(hostEl) {
         return;
       }
 
+      const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
       entry.month = month;
       entry.amount = amt;
       entry.costType = costType;
       entry.projectId = projectId;
+      entry.customer = customer;
+      entry.entity = entity;
       entry.remark = remark;
       entry.vouchers = merged;
+      entry.updatedAt = nowStr;
       if (!Array.isArray(entry.editLogs)) entry.editLogs = [];
       entry.editLogs.push({
         time: new Date().toLocaleString('zh-CN', { hour12: false }),
@@ -346,10 +405,13 @@ function openRtlManualCostModalFromClick(hostEl) {
     }
 
     const id = `MAN-${Date.now()}`;
+    const nowStr = new Date().toLocaleString('zh-CN', { hour12: false });
     DATA.retail.manualTransferCosts.unshift({
       id,
       platform: plat,
       month,
+      customer,
+      entity,
       amount: amt,
       costType,
       projectId,
@@ -357,12 +419,13 @@ function openRtlManualCostModalFromClick(hostEl) {
       vouchers: newVouchers,
       editLogs: [],
       operator: '当前用户',
-      createdAt: new Date().toLocaleString('zh-CN', { hour12: false }),
+      createdAt: nowStr,
+      updatedAt: nowStr,
     });
     appendCostChangeAudit({
       recordId: id,
       action: '人工转入成本',
-      detail: `${plat} · ${month} · ${formatMoney(amt)} · ${costType} → ${projectId}；凭证 ${newVouchers.length} 个`,
+      detail: `${plat} · ${customer} · ${entity} · ${month} · ${formatMoney(amt)} · ${costType} → ${projectId}；凭证 ${newVouchers.length} 个`,
     });
     toast('已登记', `已在 ${plat} 登记 ${month} 人工转入成本 ${formatMoney(amt)}。`);
     closeModal();
@@ -641,8 +704,14 @@ document.addEventListener('click', (e) => {
     closeDrawer();
     return;
   }
-  if (action === 'createBizBill') {
-    toast('创建', '新建业务账单（mock）。');
+  if (action === 'syncFromPms' || action === 'createBizBill') {
+    toast('PMS 同步', '已从 PMS 拉取最新业务账单（mock）。本系统不支持单独创建账单，请通过 PMS 维护后同步。');
+    render();
+    return;
+  }
+  if (action === 'refreshBizBillsList') {
+    render();
+    toast('已刷新', '业务账单列表已更新。');
     return;
   }
   if (action === 'viewBizBillSettlement') {
@@ -682,8 +751,8 @@ document.addEventListener('click', (e) => {
     toast('已刷新', `账单 ${billId} 已刷新。`);
     return;
   }
-  if (action === 'bizBillReportCustoms') {
-    toast('报关', `账单 ${el.dataset.billId}：报关操作（mock）。`);
+  if (action === 'bizBillReportCustoms' || action === 'bizBillReport') {
+    toast('报表', `账单 ${el.dataset.billId}：导出报表（mock）。`);
     return;
   }
   if (action === 'refreshBizBillExcel' || action === 'refreshBizBillVoucher') {
@@ -878,105 +947,192 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // ── 业务账单详情：从账单侧关联成本单 ─────────────────────────────────────────
-  if (action === 'openBillCostLink') {
+  // ── 业务账单详情：新增成本单（两种来源：成本管理 / 其他业务账单） ──────────────
+  if (action === 'openBillCostAdd') {
     const billId = Number(el.dataset.billId || '');
     const bizBill = DATA.retail.bizBills.find(b => b.id === billId);
     if (!bizBill) { toast('提示', '未找到业务账单。'); return; }
     if (bizBill.status === '已同步') { toast('提示', '账单已提交，不可修改关联。'); return; }
 
-    // 可选成本单：同平台 + 未财务锁定 + （未关联 或 已关联本账单）
-    const availRecords = DATA.retail.costRecords.filter(r =>
-      r.platform === bizBill.platform &&
-      !isRecordFinanceLocked(r) &&
-      (r.linkedBizBillId == null || r.linkedBizBillId === billId)
-    );
+    const costSrcRecords = getCostSourcesForBillAdd(bizBill, billId);
 
-    if (availRecords.length === 0) {
-      openModal({
-        title: '关联成本单',
-        bodyHtml: `<div class="callout callout-warning">当前平台（${escapeHtml(bizBill.platform)}）暂无可关联的成本单（需未关联且未财务锁定）。请先在「成本管理」确认当月成本单已生成。</div>`,
-        footerHtml: `<button class="btn" id="bcl-close-empty">关闭</button>`,
-      });
-      $('#bcl-close-empty').addEventListener('click', closeModal);
-      return;
-    }
-
-    const rowsHtml = availRecords.map(r => {
-      const alreadyLinked = r.linkedBizBillId === billId;
-      const tagHtml = alreadyLinked
-        ? `<span class="pill pill-info" style="font-size:11px">本单已关联</span>`
-        : `<span class="pill pill-success" style="font-size:11px">可关联</span>`;
-      const defAmt = alreadyLinked ? String(r.claimed) : '';
+    const costRowsHtml = costSrcRecords.length > 0 ? costSrcRecords.map((r) => {
+      const maxAmt = costTransferableMax(r, billId);
+      const linkedOther = billIdEq(r.linkedBizBillId, billId)
+        ? `本单已关联 ${formatMoney(r.claimed)}，可追加`
+        : r.linkedBizBillId
+          ? `已关联账单 ${r.linkedBizBillId}（${formatMoney(r.claimed)}）`
+          : '未关联';
       return `<tr>
-        <td style="padding:6px 10px;font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</td>
-        <td style="padding:6px 10px">${escapeHtml(r.month)}</td>
-        <td style="padding:6px 10px">${escapeHtml(r.customer)}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(r.entity || '')}</span></td>
-        <td style="padding:6px 10px;text-align:right">${escapeHtml(formatMoney(r.actual))}</td>
-        <td style="padding:6px 10px">${tagHtml}</td>
-        <td style="padding:6px 10px">
-          <input type="number" class="input bcl-amt-input" data-rec-id="${escapeHtml(r.id)}"
-            min="0" max="${r.actual}" step="0.01" style="width:120px"
-            placeholder="认领金额" value="${escapeHtml(defAmt)}" />
+        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</td>
+        <td style="padding:6px 8px">${escapeHtml(r.month)}</td>
+        <td style="padding:6px 8px">${escapeHtml(r.platform)}</td>
+        <td style="padding:6px 8px">${escapeHtml(r.customer)}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(r.entity || '')}</span></td>
+        <td style="padding:6px 8px;text-align:right">${escapeHtml(formatMoney(r.actual))}</td>
+        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${escapeHtml(linkedOther)}</td>
+        <td style="padding:6px 8px;text-align:right;font-weight:600;color:var(--success)">${escapeHtml(formatMoney(maxAmt))}</td>
+        <td style="padding:6px 8px">
+          <input type="number" class="input bca-cost-amt" data-rec-id="${escapeHtml(r.id)}"
+            min="0" max="${maxAmt}" step="0.01" style="width:110px" placeholder="划拨金额" />
         </td>
       </tr>`;
-    }).join('');
+    }).join('') : `<tr><td colspan="8" style="padding:12px;color:var(--muted)">该客户（${escapeHtml(bizBill.customer)}）下暂无可选成本单；可试账单 <b>12075</b>、<b>12110</b>（康师傅方便面）</td></tr>`;
+
+    const billSrcBills = getBillSourcesForCostAdd(bizBill, billId).map((b) => ({
+      bill: b,
+      costTotal: getLinkedCostTotal(b.id),
+    }));
+
+    const billRowsHtml = billSrcBills.length > 0 ? billSrcBills.map(({ bill: sb, costTotal }) => {
+      const shortName = sb.name.length > 40 ? sb.name.slice(0, 40) + '…' : sb.name;
+      return `<tr>
+        <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${sb.id}</td>
+        <td style="padding:6px 8px" title="${escapeHtml(sb.name)}">${escapeHtml(shortName)}</td>
+        <td style="padding:6px 8px">${escapeHtml(sb.start)} ~ ${escapeHtml(sb.end)}</td>
+        <td style="padding:6px 8px;text-align:right;font-weight:600;color:var(--success)">${escapeHtml(formatMoney(costTotal))}</td>
+        <td style="padding:6px 8px">
+          <input type="number" class="input bca-bill-amt" data-src-bill-id="${sb.id}"
+            min="0" max="${costTotal}" step="0.01" style="width:110px" placeholder="划拨金额" />
+        </td>
+      </tr>`;
+    }).join('') : `<tr><td colspan="5" style="padding:12px;color:var(--muted)">该客户下暂无符合条件的其他业务账单</td></tr>`;
+
+    const tabStyle = (active) => `padding:8px 14px;cursor:pointer;font-size:13px;border:none;background:none;border-bottom:2px solid ${active ? 'var(--accent)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-weight:${active ? '600' : '400'};`;
 
     openModal({
-      title: `关联成本单 · 账单 ${billId}（${escapeHtml(bizBill.platform)}）`,
+      title: `新增成本单 · 账单 ${billId}（${escapeHtml(bizBill.customer)}）· 可选成本 ${costSrcRecords.length} 条 / 账单 ${billSrcBills.length} 张`,
       bodyHtml: `
-        <div class="callout callout-info" style="margin-bottom:12px;font-size:13px">
-          <div class="callout-title">操作说明</div>
-          下方列出当前平台下可关联的成本单。在「认领金额」列填写本次账单认领该成本单的金额（≤ 实际成本），
-          可同时填写多条，点击「确认关联」一次提交。同一成本单可被多张账单按金额拆分认领。
+        <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <button type="button" class="bca-tab" data-bca-tab="cost" style="${tabStyle(true)}">从成本管理选择</button>
+          <button type="button" class="bca-tab" data-bca-tab="bill" style="${tabStyle(false)}">从业务账单选择</button>
         </div>
-        <div class="table-wrap" style="max-height:340px;overflow-y:auto">
-          <table>
-            <thead><tr>
-              <th>成本记录</th><th>月份</th><th>客户·实体</th>
-              <th>实际成本</th><th>状态</th><th>认领金额</th>
-            </tr></thead>
-            <tbody>${rowsHtml}</tbody>
-          </table>
+        <div id="bca-panel-cost">
+          <div class="callout callout-info" style="margin-bottom:10px;font-size:13px">
+            <div class="callout-title">从成本管理选择</div>
+            列出当前客户下可划拨的成本单（未财务锁定）。填写「划拨金额」后确认，成本单将关联到本账单。
+          </div>
+          <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+            <table>
+              <thead><tr><th>记录</th><th>月份</th><th>平台</th><th>客户·实体</th><th>实际成本</th><th>当前关联</th><th>可划拨</th><th>划拨金额</th></tr></thead>
+              <tbody>${costRowsHtml}</tbody>
+            </table>
+          </div>
         </div>
-        <div id="bcl-err" style="display:none;color:var(--danger);font-size:13px;margin-top:10px"></div>`,
+        <div id="bca-panel-bill" style="display:none">
+          <div class="callout callout-info" style="margin-bottom:10px;font-size:13px">
+            <div class="callout-title">从业务账单选择</div>
+            列出同客户（${escapeHtml(bizBill.customer)}）、未同步且有关联成本的其他业务账单。填写划拨金额后，系统将从对应账单的关联成本中转移至本账单。
+          </div>
+          <div class="table-wrap" style="max-height:300px;overflow-y:auto">
+            <table>
+              <thead><tr><th>账单ID</th><th>账单名称</th><th>账期</th><th>可划拨金额</th><th>划拨金额</th></tr></thead>
+              <tbody>${billRowsHtml}</tbody>
+            </table>
+          </div>
+        </div>
+        <div id="bca-err" style="display:none;color:var(--danger);font-size:13px;margin-top:10px"></div>`,
       footerHtml: `
-        <button class="btn" id="bcl-cancel">取消</button>
-        <button class="btn btn-primary" id="bcl-ok" data-bill-id="${billId}">确认关联</button>`,
+        <button class="btn" id="bca-cancel">取消</button>
+        <button class="btn btn-primary" id="bca-ok">确认新增</button>`,
     });
-    $('#bcl-cancel').addEventListener('click', closeModal);
-    document.getElementById('bcl-ok')?.addEventListener('click', () => {
-      const errEl = document.getElementById('bcl-err');
+
+    // tab 切换
+    document.querySelectorAll('.bca-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.bcaTab;
+        document.getElementById('bca-panel-cost').style.display = tab === 'cost' ? '' : 'none';
+        document.getElementById('bca-panel-bill').style.display = tab === 'bill' ? '' : 'none';
+        document.querySelectorAll('.bca-tab').forEach(b => {
+          const a = b.dataset.bcaTab === tab;
+          b.style.borderBottom = `2px solid ${a ? 'var(--accent)' : 'transparent'}`;
+          b.style.color = a ? 'var(--accent)' : 'var(--muted)';
+          b.style.fontWeight = a ? '600' : '400';
+        });
+      });
+    });
+
+    document.getElementById('bca-cancel')?.addEventListener('click', closeModal);
+
+    document.getElementById('bca-ok')?.addEventListener('click', () => {
+      const errEl = document.getElementById('bca-err');
       if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-      const inputs = document.querySelectorAll('.bcl-amt-input');
-      const toLink = [];
-      for (const inp of inputs) {
-        const val = inp.value.trim();
-        if (!val) continue;
-        const amt = Number(val);
-        const recId = inp.dataset.recId;
-        const rec = DATA.retail.costRecords.find(r => r.id === recId);
-        if (!rec) continue;
-        if (!Number.isFinite(amt) || amt <= 0) {
-          if (errEl) { errEl.style.display = 'block'; errEl.textContent = `记录 ${recId} 认领金额须大于 0。`; }
-          return;
+      const showErr = (msg) => { if (errEl) { errEl.style.display = 'block'; errEl.textContent = msg; } };
+
+      // 判断当前激活 tab
+      const costPanelVisible = document.getElementById('bca-panel-cost')?.style.display !== 'none';
+
+      if (costPanelVisible) {
+        // 从成本管理新增
+        const toLink = [];
+        for (const inp of document.querySelectorAll('.bca-cost-amt')) {
+          const val = inp.value.trim();
+          if (!val) continue;
+          const amt = Number(val);
+          const recId = inp.dataset.recId;
+          const rec = DATA.retail.costRecords.find(r => r.id === recId);
+          if (!rec) continue;
+          if (!Number.isFinite(amt) || amt <= 0) { showErr(`记录 ${recId} 划拨金额须大于 0。`); return; }
+          const maxAmt = costTransferableMax(rec, billId);
+          if (amt > maxAmt + 0.01) {
+            showErr(`记录 ${recId} 划拨金额不可超过可划拨上限 ${formatMoney(maxAmt)}。`);
+            return;
+          }
+          toLink.push({ rec, amt });
         }
-        if (amt > rec.actual) {
-          if (errEl) { errEl.style.display = 'block'; errEl.textContent = `记录 ${recId} 认领金额（${formatMoney(amt)}）不可超过实际成本（${formatMoney(rec.actual)}）。`; }
-          return;
+        if (toLink.length === 0) { showErr('请至少填写一条成本记录的划拨金额。'); return; }
+        for (const { rec, amt } of toLink) {
+          if (billIdEq(rec.linkedBizBillId, billId)) {
+            rec.claimed = (rec.claimed || 0) + amt;
+          } else {
+            rec.claimed = amt;
+            rec.linkedBizBillId = billId;
+          }
+          appendCostChangeAudit({ recordId: rec.id, action: '新增成本关联', detail: `从成本管理划拨 ${formatMoney(amt)} → 账单 ${billId}` });
         }
-        toLink.push({ rec, amt });
+        toast('新增成功', `已从成本管理划拨 ${toLink.length} 条记录至账单 ${billId}。`);
+      } else {
+        // 从业务账单新增
+        const toTransfer = [];
+        for (const inp of document.querySelectorAll('.bca-bill-amt')) {
+          const val = inp.value.trim();
+          if (!val) continue;
+          const amt = Number(val);
+          const srcBillId = Number(inp.dataset.srcBillId);
+          const srcBill = DATA.retail.bizBills.find(b => b.id === srcBillId);
+          if (!srcBill) continue;
+          if (!Number.isFinite(amt) || amt <= 0) { showErr(`账单 ${srcBillId} 划拨金额须大于 0。`); return; }
+          const srcTotal = getLinkedCostTotal(srcBillId);
+          if (amt > srcTotal) { showErr(`账单 ${srcBillId} 划拨金额（${formatMoney(amt)}）超过可划拨合计（${formatMoney(srcTotal)}）。`); return; }
+          toTransfer.push({ srcBillId, amt });
+        }
+        if (toTransfer.length === 0) { showErr('请至少填写一张业务账单的划拨金额。'); return; }
+        for (const { srcBillId, amt } of toTransfer) {
+          // 从源账单关联的成本记录中按顺序减掉 amt，并将首条整体或拆分转给当前账单
+          let remaining = amt;
+          const srcRecords = getLinkedCostRecords(srcBillId).filter(r => !isRecordFinanceLocked(r));
+          for (const r of srcRecords) {
+            if (remaining <= 0) break;
+            const take = Math.min(r.claimed, remaining);
+            r.claimed -= take;
+            remaining -= take;
+            appendCostChangeAudit({ recordId: r.id, action: '跨账单成本转移（源）', detail: `从账单 ${srcBillId} 转出 ${formatMoney(take)} → 账单 ${billId}` });
+            if (r.claimed <= 0.001) { r.claimed = 0; r.linkedBizBillId = billId; }
+          }
+          // 若已有同来源的已清零记录，将其链接到当前账单
+          const freed = srcRecords.find(r => r.linkedBizBillId === billId && r.claimed > 0);
+          if (!freed) {
+            // 找一条已清零的同来源记录改链
+            const zeroed = srcRecords.find(r => r.claimed === 0 && r.linkedBizBillId === billId);
+            if (!zeroed) {
+              // 创建一个标记：用首条已转出的记录
+              const first = srcRecords[0];
+              if (first && first.claimed === 0) { first.claimed = amt; first.linkedBizBillId = billId; }
+            }
+          }
+          appendCostChangeAudit({ recordId: `BILL-${srcBillId}`, action: '跨账单成本转移（目标）', detail: `接收来自账单 ${srcBillId} 的 ${formatMoney(amt)} → 账单 ${billId}` });
+        }
+        toast('划拨成功', `已从 ${toTransfer.length} 张业务账单划拨成本至账单 ${billId}。`);
       }
-      if (toLink.length === 0) {
-        if (errEl) { errEl.style.display = 'block'; errEl.textContent = '请至少填写一条成本记录的认领金额。'; }
-        return;
-      }
-      for (const { rec, amt } of toLink) {
-        rec.claimed = amt;
-        rec.linkedBizBillId = billId;
-        appendCostChangeAudit({ recordId: rec.id, action: '关联业务账单', detail: `从账单详情关联：认领 ${formatMoney(amt)} → 账单 ${billId}` });
-      }
-      toast('关联成功', `已关联 ${toLink.length} 条成本记录至账单 ${billId}。`);
       closeModal();
       document.getElementById('drawer-body').innerHTML = BizBillDetailHtml(String(billId));
       render();
@@ -1186,29 +1342,43 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // ── 业务账单详情：解除单条成本关联 ──────────────────────────────────────────
-  if (action === 'rtlBillUnlinkCost') {
+  // ── 业务账单详情：删除成本关联 ───────────────────────────────────────────────
+  if (action === 'rtlBillDeleteCost' || action === 'rtlBillUnlinkCost') {
     const recId = el.dataset.recordId || '';
     const billId = Number(el.dataset.billId || '');
     const rec = DATA.retail.costRecords.find(r => r.id === recId);
     if (!rec) { toast('提示', '未找到成本记录。'); return; }
-    if (isRecordFinanceLocked(rec)) { toast('提示', '该成本记录已财务锁定，不可直接解除关联，请在财务入账月做当期调整。'); return; }
+    const bizBill = DATA.retail.bizBills.find(b => b.id === billId);
+    if (bizBill?.status === '已同步') { toast('提示', '账单已提交，不可删除关联。'); return; }
+    if (isPastFinanceEntryDeadline(rec)) {
+      const fin = rec.pushedToFinanceMonth || rec.month || '—';
+      openModal({
+        title: '无法删除成本关联',
+        bodyHtml: `<div class="callout callout-warning" style="font-size:13px;line-height:1.7">
+          已过该成本入账时间（归属月 <b>${escapeHtml(rec.month || '—')}</b>${rec.pushedToFinanceMonth ? `，已推送财务月 <b>${escapeHtml(fin)}</b>` : ''}），无法直接删除。<br><br>
+          请通过「修改」将本单关联金额<strong>转出</strong>到可承接成本的业务账单；转出完成后系统将自动解除本条成本记录与本账单的关联。
+        </div>`,
+        footerHtml: `<button class="btn btn-primary" id="del-cost-blocked-ok">知道了</button>`,
+      });
+      document.getElementById('del-cost-blocked-ok')?.addEventListener('click', closeModal);
+      return;
+    }
     openModal({
-      title: '解除成本关联',
+      title: '删除成本关联',
       bodyHtml: `<div style="font-size:13px;line-height:1.6;padding:4px 0">
-        确定解除成本记录 <b>${escapeHtml(recId)}</b>（认领额 ${escapeHtml(formatMoney(rec.claimed))}）与账单 <b>${billId}</b> 的关联吗？<br>
-        解除后该成本记录变为「未关联」状态，认领金额归零，可重新分配给其他账单。
+        确定删除成本记录 <b>${escapeHtml(recId)}</b>（本单关联额 ${escapeHtml(formatMoney(rec.claimed))}）与账单 <b>${billId}</b> 的关联吗？<br>
+        删除后该成本记录变为「未关联」状态，关联金额归零，可重新分配给其他账单。
       </div>`,
       footerHtml: `
-        <button class="btn" id="unlink-cancel">取消</button>
-        <button class="btn btn-danger" id="unlink-ok">确认解除</button>`,
+        <button class="btn" id="del-cost-cancel">取消</button>
+        <button class="btn btn-danger" id="del-cost-ok">确认删除</button>`,
     });
-    $('#unlink-cancel').addEventListener('click', closeModal);
-    document.getElementById('unlink-ok')?.addEventListener('click', () => {
-      appendCostChangeAudit({ recordId: recId, action: '解除业务账单关联', detail: `从账单 ${billId} 解除，认领额 ${formatMoney(rec.claimed)} 归零` });
+    $('#del-cost-cancel').addEventListener('click', closeModal);
+    document.getElementById('del-cost-ok')?.addEventListener('click', () => {
+      appendCostChangeAudit({ recordId: recId, action: '删除成本关联', detail: `从账单 ${billId} 删除，关联额 ${formatMoney(rec.claimed)} 归零` });
       rec.claimed = 0;
       rec.linkedBizBillId = null;
-      toast('已解除', `成本记录 ${recId} 已从账单 ${billId} 解除关联。`);
+      toast('已删除', `成本记录 ${recId} 已从账单 ${billId} 删除关联。`);
       closeModal();
       document.getElementById('drawer-body').innerHTML = BizBillDetailHtml(String(billId));
       render();
@@ -1216,52 +1386,212 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // ── 业务账单详情：修改单条成本认领金额 ──────────────────────────────────────
-  if (action === 'rtlBillAdjustClaimed') {
+  // ── 业务账单详情：修改成本关联（转入 / 转出） ───────────────────────────────
+  if (action === 'rtlBillModifyCost' || action === 'rtlBillAdjustClaimed') {
     const recId = el.dataset.recordId || '';
     const billId = Number(el.dataset.billId || '');
     const rec = DATA.retail.costRecords.find(r => r.id === recId);
     if (!rec) { toast('提示', '未找到成本记录。'); return; }
-    if (isRecordFinanceLocked(rec)) { toast('提示', '该记录已财务锁定，不可调整。'); return; }
+    const bizBill = DATA.retail.bizBills.find(b => b.id === billId);
+    if (bizBill?.status === '已同步') { toast('提示', '账单已提交，不可修改。'); return; }
+
+    const freeAmt = Math.max(0, (rec.actual || 0) - (rec.claimed || 0));
+    const borrowBills = getBillSourcesForCostAdd(bizBill, billId).map((b) => ({
+      bill: b,
+      costTotal: getLinkedCostTotal(b.id),
+    }));
+    const tabStyle = (active) => `padding:8px 14px;cursor:pointer;font-size:13px;border:none;background:none;border-bottom:2px solid ${active ? 'var(--accent)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-weight:${active ? '600' : '400'};`;
+
+    const borrowRowsHtml = borrowBills.length > 0
+      ? borrowBills.map(({ bill: sb, costTotal }) => {
+          const shortName = (sb.name || '').length > 36 ? sb.name.slice(0, 36) + '…' : (sb.name || '');
+          return `<tr>
+            <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${sb.id}</td>
+            <td style="padding:6px 8px" title="${escapeHtml(sb.name || '')}">${escapeHtml(shortName)}</td>
+            <td style="padding:6px 8px;text-align:right;font-weight:600;color:var(--success)">${escapeHtml(formatMoney(costTotal))}</td>
+            <td style="padding:6px 8px">
+              <input type="number" class="input bm-in-borrow-amt" data-src-bill-id="${sb.id}"
+                min="0" max="${costTotal}" step="0.01" style="width:110px" placeholder="划拨金额" />
+            </td>
+          </tr>`;
+        }).join('')
+      : `<tr><td colspan="4" style="padding:12px;color:var(--muted)">同客户下暂无其他未同步且有关联成本的业务账单</td></tr>`;
+
+    const targetBills = DATA.retail.bizBills.filter(
+      (b) => customerMatches(b.customer, bizBill.customer) && !billIdEq(b.id, billId) && b.status !== '已同步'
+    );
+    const targetOpts = targetBills.length > 0
+      ? targetBills.map(b => `<option value="${b.id}">${escapeHtml(b.id + ' · ' + b.name.slice(0, 30))}</option>`).join('')
+      : `<option value="">— 暂无可选目标账单 —</option>`;
+
     openModal({
-      title: `修改认领金额 · ${escapeHtml(recId)}`,
+      title: `修改成本关联 · ${escapeHtml(recId)}`,
       bodyHtml: `
         <div class="callout callout-info" style="margin-bottom:12px;font-size:13px">
-          实际成本：<b>${escapeHtml(formatMoney(rec.actual))}</b>
-          &nbsp;·&nbsp; 当前认领：<b>${escapeHtml(formatMoney(rec.claimed))}</b>
-          &nbsp;·&nbsp; 月份：<b>${escapeHtml(rec.month)}</b>
+          成本记录 <b>${escapeHtml(recId)}</b>&nbsp;·&nbsp;月份：<b>${escapeHtml(rec.month)}</b>&nbsp;·&nbsp;
+          实际成本：<b>${escapeHtml(formatMoney(rec.actual))}</b>&nbsp;·&nbsp;
+          本单关联：<b>${escapeHtml(formatMoney(rec.claimed))}</b>&nbsp;·&nbsp;
+          本单可追加余量：<b style="color:${freeAmt > 0 ? 'var(--success)' : 'var(--muted)'}">${escapeHtml(formatMoney(freeAmt))}</b>
         </div>
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <span class="page-subtitle">新认领金额</span>
-          <input class="input" id="adj-claimed-val" type="number" min="0" max="${rec.actual}" step="0.01"
-            value="${rec.claimed}" style="width:160px" />
-          <span class="page-subtitle" style="color:var(--muted)">元（上限 ${escapeHtml(formatMoney(rec.actual))}）</span>
+        <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:14px">
+          <button type="button" class="bm-tab" data-bm-tab="in" style="${tabStyle(true)}">转入金额</button>
+          <button type="button" class="bm-tab" data-bm-tab="out" style="${tabStyle(false)}">转出金额</button>
         </div>
-        <div id="adj-claimed-err" style="display:none;color:var(--danger);font-size:12px;margin-top:8px"></div>`,
+
+        <div id="bm-panel-in">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">方式一 · 本成本单未分配余量</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;line-height:1.6">
+            从本条成本单尚未认领的部分转入（实际成本 − 当前已关联合计），增加本账单对本成本单的关联额。
+          </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:16px">
+            <span class="page-subtitle">转入金额</span>
+            <input class="input" id="bm-in-self" type="number" min="0" max="${freeAmt}" step="0.01"
+              placeholder="0.00" style="width:140px" ${freeAmt <= 0 ? 'disabled' : ''} />
+            <span class="page-subtitle" style="color:var(--muted)">元（上限 ${escapeHtml(formatMoney(freeAmt))}）</span>
+          </div>
+
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">方式二 · 从其他业务账单划拨</div>
+          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;line-height:1.6">
+            从同客户、未同步且已关联成本的其他业务账单中划拨；减少对方账单关联额，并增加到本账单对 <b>${escapeHtml(recId)}</b> 的关联额。
+          </div>
+          <div class="table-wrap" style="max-height:220px;overflow-y:auto;margin-bottom:8px">
+            <table>
+              <thead><tr><th>账单ID</th><th>账单名称</th><th>可划拨</th><th>划拨金额</th></tr></thead>
+              <tbody>${borrowRowsHtml}</tbody>
+            </table>
+          </div>
+          <div style="font-size:13px">划拨合计：<b id="bm-in-borrow-sum">${formatMoney(0)}</b></div>
+          ${freeAmt <= 0 && !borrowBills.length ? `<div class="callout callout-warning" style="margin-top:10px;font-size:12px">暂无可用转入来源。</div>` : ''}
+        </div>
+
+        <div id="bm-panel-out" style="display:none">
+          <div style="font-size:13px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+            将本账单当前关联的部分金额转出，选择目标账单后确认。转出后该金额将从本账单释放，目标账单可通过「新增成本单」接收。
+          </div>
+          <div style="display:flex;flex-direction:column;gap:10px">
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span class="page-subtitle" style="white-space:nowrap">目标账单</span>
+              <select class="select" id="bm-out-target" style="flex:1;min-width:200px">
+                <option value="">— 请选择 —</option>${targetOpts}
+              </select>
+            </div>
+            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+              <span class="page-subtitle">转出金额</span>
+              <input class="input" id="bm-out-amt" type="number" min="0" max="${rec.claimed}" step="0.01"
+                placeholder="0.00" style="width:160px" />
+              <span class="page-subtitle" style="color:var(--muted)">元（上限本单关联额 ${escapeHtml(formatMoney(rec.claimed))}）</span>
+            </div>
+          </div>
+        </div>
+        <div id="bm-err" style="display:none;color:var(--danger);font-size:13px;margin-top:10px"></div>`,
       footerHtml: `
-        <button class="btn" id="adj-claimed-cancel">取消</button>
-        <button class="btn btn-primary" id="adj-claimed-ok">保存</button>`,
+        <button class="btn" id="bm-cancel">取消</button>
+        <button class="btn btn-primary" id="bm-ok">确认</button>`,
     });
-    $('#adj-claimed-cancel').addEventListener('click', closeModal);
-    document.getElementById('adj-claimed-ok')?.addEventListener('click', () => {
-      const errEl = document.getElementById('adj-claimed-err');
+
+    // tab 切换
+    document.querySelectorAll('.bm-tab').forEach(btn => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.bmTab;
+        document.getElementById('bm-panel-in').style.display = tab === 'in' ? '' : 'none';
+        document.getElementById('bm-panel-out').style.display = tab === 'out' ? '' : 'none';
+        document.querySelectorAll('.bm-tab').forEach(b => {
+          const a = b.dataset.bmTab === tab;
+          b.style.borderBottom = `2px solid ${a ? 'var(--accent)' : 'transparent'}`;
+          b.style.color = a ? 'var(--accent)' : 'var(--muted)';
+          b.style.fontWeight = a ? '600' : '400';
+        });
+      });
+    });
+
+    const updateBorrowSum = () => {
+      let sum = 0;
+      document.querySelectorAll('.bm-in-borrow-amt').forEach((inp) => {
+        const v = Number(inp.value || 0);
+        if (Number.isFinite(v) && v > 0) sum += v;
+      });
+      const el = document.getElementById('bm-in-borrow-sum');
+      if (el) el.textContent = formatMoney(sum);
+    };
+    document.querySelectorAll('.bm-in-borrow-amt').forEach((inp) => {
+      inp.addEventListener('input', updateBorrowSum);
+    });
+    updateBorrowSum();
+
+    document.getElementById('bm-cancel')?.addEventListener('click', closeModal);
+    document.getElementById('bm-ok')?.addEventListener('click', () => {
+      const errEl = document.getElementById('bm-err');
       if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
-      const val = Number(document.getElementById('adj-claimed-val')?.value || 0);
-      if (!Number.isFinite(val) || val < 0) {
-        if (errEl) { errEl.style.display = 'block'; errEl.textContent = '请输入有效金额（≥ 0）。'; }
-        return;
+      const showErr = (msg) => { if (errEl) { errEl.style.display = 'block'; errEl.textContent = msg; } };
+      const inPanelVisible = document.getElementById('bm-panel-in')?.style.display !== 'none';
+
+      if (inPanelVisible) {
+        const selfAmt = Number(document.getElementById('bm-in-self')?.value || 0);
+        const toBorrow = [];
+        for (const inp of document.querySelectorAll('.bm-in-borrow-amt')) {
+          const val = inp.value.trim();
+          if (!val) continue;
+          const amt = Number(val);
+          const srcBillId = Number(inp.dataset.srcBillId);
+          if (!Number.isFinite(amt) || amt <= 0) { showErr(`账单 ${srcBillId} 划拨金额须大于 0。`); return; }
+          const srcTotal = getLinkedCostTotal(srcBillId);
+          if (amt > srcTotal) { showErr(`账单 ${srcBillId} 划拨金额（${formatMoney(amt)}）超过可划拨合计（${formatMoney(srcTotal)}）。`); return; }
+          toBorrow.push({ srcBillId, amt });
+        }
+        const borrowTotal = toBorrow.reduce((s, x) => s + x.amt, 0);
+        if ((!Number.isFinite(selfAmt) || selfAmt <= 0) && borrowTotal <= 0) {
+          showErr('请填写本成本单转入金额和/或至少一张其他账单的划拨金额。');
+          return;
+        }
+        if (selfAmt > 0 && selfAmt > freeAmt) {
+          showErr(`本成本单转入（${formatMoney(selfAmt)}）不可超过可追加余量（${formatMoney(freeAmt)}）。`);
+          return;
+        }
+        const prevClaimed = rec.claimed;
+        let added = 0;
+        if (selfAmt > 0) {
+          rec.claimed += selfAmt;
+          added += selfAmt;
+          appendCostChangeAudit({ recordId: recId, action: '修改成本关联-转入(本单余量)', detail: `账单 ${billId}：本单关联额 ${formatMoney(prevClaimed)} → ${formatMoney(rec.claimed)}` });
+        }
+        for (const { srcBillId, amt } of toBorrow) {
+          let remaining = amt;
+          const srcRecords = getLinkedCostRecords(srcBillId).filter(r => !isRecordFinanceLocked(r));
+          for (const r of srcRecords) {
+            if (remaining <= 0) break;
+            const take = Math.min(r.claimed, remaining);
+            r.claimed -= take;
+            remaining -= take;
+            appendCostChangeAudit({ recordId: r.id, action: '修改成本关联-转入(跨账单源)', detail: `从账单 ${srcBillId} 转出 ${formatMoney(take)} → 账单 ${billId} · ${recId}` });
+            if (r.claimed <= 0.001) { r.claimed = 0; r.linkedBizBillId = null; }
+          }
+          rec.claimed += amt;
+          added += amt;
+          appendCostChangeAudit({ recordId: recId, action: '修改成本关联-转入(跨账单)', detail: `从账单 ${srcBillId} 接收 ${formatMoney(amt)} → 账单 ${billId}` });
+        }
+        rec.linkedBizBillId = billId;
+        toast('已转入', `成本记录 ${recId} 已向账单 ${billId} 转入合计 ${formatMoney(added)}。`);
+      } else {
+        // 转出
+        const targetBillId = Number(document.getElementById('bm-out-target')?.value || 0);
+        const amt = Number(document.getElementById('bm-out-amt')?.value || 0);
+        if (!targetBillId) { showErr('请选择目标账单。'); return; }
+        if (!Number.isFinite(amt) || amt <= 0) { showErr('请输入大于 0 的转出金额。'); return; }
+        if (amt > rec.claimed) { showErr(`转出金额（${formatMoney(amt)}）不可超过本单关联额（${formatMoney(rec.claimed)}）。`); return; }
+        const prevClaimed = rec.claimed;
+        rec.claimed -= amt;
+        if (rec.claimed <= 0.001) { rec.claimed = 0; rec.linkedBizBillId = null; }
+        appendCostChangeAudit({ recordId: recId, action: '修改成本关联-转出', detail: `账单 ${billId} → 目标账单 ${targetBillId}：转出 ${formatMoney(amt)}，本单关联额 ${formatMoney(prevClaimed)} → ${formatMoney(rec.claimed)}` });
+        toast('已转出', `已从账单 ${billId} 向账单 ${targetBillId} 转出 ${formatMoney(amt)}，对方可通过「新增成本单」接收。`);
       }
-      if (val > rec.actual) {
-        if (errEl) { errEl.style.display = 'block'; errEl.textContent = `认领金额不可超过实际成本 ${formatMoney(rec.actual)}。`; }
-        return;
-      }
-      appendCostChangeAudit({ recordId: recId, action: '修改认领金额', detail: `账单 ${billId}：认领额 ${formatMoney(rec.claimed)} → ${formatMoney(val)}` });
-      rec.claimed = val;
-      toast('已更新', `成本记录 ${recId} 认领额已更新为 ${formatMoney(val)}。`);
       closeModal();
       document.getElementById('drawer-body').innerHTML = BizBillDetailHtml(String(billId));
       render();
     });
+    // Keep old action name as alias — handled by the same block above
+    if (action === 'rtlBillAdjustClaimed') {
+      // already handled above, just return
+    }
     return;
   }
 
@@ -1434,7 +1764,7 @@ document.addEventListener('click', (e) => {
       title: `编辑日志 · ${entry.id}`,
       bodyHtml: `
         <div style="font-size:12px;color:var(--muted);margin-bottom:12px">
-          登记：${escapeHtml(entry.createdAt || '—')} · ${escapeHtml(entry.operator || '—')}（以下为倒序：最近修改在上）
+          登记：${escapeHtml(entry.createdAt || '—')} · 更新：${escapeHtml(entry.updatedAt || entry.createdAt || '—')} · ${escapeHtml(entry.operator || '—')}（以下为倒序：最近修改在上）
         </div>
         ${body}`,
     });

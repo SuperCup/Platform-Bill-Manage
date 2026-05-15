@@ -9,6 +9,7 @@ export function pill(status) {
     '归集中': 'pill-info',
     '已归集': 'pill-success',
     '已同步': 'pill-success',
+    '新增': 'pill-neutral',
     '编辑中': 'pill-info',
     '待归集': 'pill-warning',
     '已确认': 'pill-success',

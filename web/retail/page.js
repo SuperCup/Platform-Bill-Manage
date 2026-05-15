@@ -2,7 +2,11 @@ import { DATA } from '../shared/data.js';
 import { escapeHtml, formatMoney } from '../shared/format.js';
 import { PageHead, Table, callout, pill } from '../shared/ui.js';
 import { getSubTab, getQueryParams } from '../shared/router.js';
-import { RetailBillsPage } from './bills.js';
+import {
+  RetailBillsPage,
+  isAllowedBizCustomer,
+  dedupeCostRecordsByEntityMonth,
+} from './bills.js';
 import { RetailProjectCostPage } from './project-cost.js';
 
 const RTL_COST_QUERY_KEYS = [
@@ -97,7 +101,11 @@ function RetailCostMgmtAuto(plat, q) {
   const monthFilter = (q.get('retailCostMonth') || '').trim();
   const custKw      = (q.get('retailCostCust')   || '').trim().toLowerCase();
 
-  let raw = DATA.retail.costRecords.filter(r => r.platform === plat);
+  let raw = dedupeCostRecordsByEntityMonth(
+    DATA.retail.costRecords.filter(
+      (r) => r.platform === plat && isAllowedBizCustomer(r.customer)
+    )
+  );
   if (monthFilter) raw = raw.filter(r => r.month === monthFilter);
 
   const byCustomer = new Map();
@@ -152,6 +160,7 @@ function RetailCostMgmtAuto(plat, q) {
 
       return [
         escapeHtml(r.month),
+        escapeHtml(r.customer),
         escapeHtml(r.entity),
         escapeHtml(r.costType || '平台活动账单'),
         `<b>${escapeHtml(formatMoney(r.actual))}</b>`,
@@ -176,7 +185,7 @@ function RetailCostMgmtAuto(plat, q) {
         </summary>
         <div class="cost-customer-body">
           ${Table(
-            ['月份', '二级实体', '成本类型', '实际成本', '已分配', '待分配', '状态', '归集项目', '业务账单', '操作'],
+            ['月份', '客户名称', '二级实体', '成本类型', '实际成本', '已分配', '待分配', '状态', '归集项目', '业务账单', '操作'],
             innerRows
           )}
         </div>
@@ -251,14 +260,20 @@ function RetailCostMgmtManual(plat, q) {
         <span style="color:var(--border)">|</span>
         <a class="link" data-action="viewRtlManualEditLogs" data-manual-id="${escapeHtml(e.id)}">日志${logCount ? `(${logCount})` : ''}</a>
       </div>`;
+    const remarkShort = (e.remark || '').length > 24 ? (e.remark || '').slice(0, 24) + '…' : (e.remark || '');
     return [
       escapeHtml(e.month),
+      escapeHtml(e.customer || '—'),
+      escapeHtml(e.entity || '—'),
       `<b>${escapeHtml(formatMoney(e.amount))}</b>`,
       escapeHtml(e.costType),
       `<a class="link" data-action="openProject" data-project="${escapeHtml(e.projectId)}">${escapeHtml(e.projectId)}</a><br><span style="font-size:11px;color:var(--muted)">${escapeHtml(pname)}</span>`,
+      remarkShort
+        ? `<span title="${escapeHtml(e.remark || '')}" style="font-size:12px">${escapeHtml(remarkShort)}</span>`
+        : '<span style="color:var(--muted)">—</span>',
       vchCell,
       escapeHtml(e.operator || '—'),
-      escapeHtml(e.createdAt || '—'),
+      escapeHtml(e.updatedAt || e.createdAt || '—'),
       ops,
     ];
   });
@@ -300,7 +315,7 @@ function RetailCostMgmtManual(plat, q) {
         <div style="height:16px"></div>
         ${
           manualTableRows.length
-            ? Table(['归属月', '成本金额', '成本类型', '关联项目', '凭证', '登记人', '登记时间', '操作'], manualTableRows)
+            ? Table(['归属月', '客户名称', '二级实体', '成本金额', '成本类型', '关联项目', '备注', '凭证', '登记人', '更新时间', '操作'], manualTableRows)
             : `<div style="padding:10px 4px;color:var(--muted);font-size:13px">当前筛选下暂无人工转入记录</div>`
         }
         ${pager}
