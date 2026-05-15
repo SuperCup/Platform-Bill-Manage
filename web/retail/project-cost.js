@@ -1,199 +1,156 @@
 /**
- * 项目成本追踪
- * 以项目为维度，按月汇总归集成本，并展示调整记录。
+ * 项目成本追踪 — 按平台 Tab 切换 + 项目汇总列表 + 月度明细展开 + 日志侧边栏
  */
 import { DATA } from '../shared/data.js';
 import { escapeHtml, formatMoney } from '../shared/format.js';
-import { Table, StatGrid, callout, pill, PageHead } from '../shared/ui.js';
+import { Table } from '../shared/ui.js';
 import { getQueryParams } from '../shared/router.js';
 
-// ── 从 costRecords 聚合出 projectId → { name, months: Map<month, {amount, recordIds}> }
-function buildProjectMonthMap(fProj, fCust, fMonth) {
-  const projMap = new Map();
+// 平台 → 产品名称映射（官方旗舰店通过 entity 字段单独判断）
+const PLATFORM_PRODUCT = {
+  '美团闪购': '美团闪购平台代运营',
+  '淘宝闪购': '淘宝闪购平台代运营',
+  '京东到家': '京东到家平台代运营',
+  '多点':     '多点平台代运营',
+};
 
-  for (const rec of DATA.retail.costRecords) {
+function deriveProduct(platform, entity) {
+  if (entity && entity.includes('官方旗舰店')) return '官方旗舰店运营';
+  return PLATFORM_PRODUCT[platform] || platform;
+}
+
+function buildProjTabHref(platform) {
+  const p = new URLSearchParams();
+  p.set('retailTab', 'projectCost');
+  p.set('pcPlatform', platform);
+  return `#/retail?${p.toString()}`;
+}
+
+/**
+ * 从 costRecords 聚合出当前平台下的项目列表。
+ * 每条 costRecord.allocDetail.projects[] 对应一个项目维度的归集金额。
+ */
+function buildProjectData(platform) {
+  const records   = DATA.retail.costRecords.filter(r => r.platform === platform);
+  const deadlines = DATA.retail.financeDeadlines || {};
+  const projectMap = new Map();
+
+  for (const rec of records) {
     for (const pa of (rec.allocDetail?.projects || [])) {
       const pid = pa.projectId;
       if (!pid) continue;
-      if (fProj && !pid.toLowerCase().includes(fProj.toLowerCase())) continue;
-      if (fCust && !rec.customer.toLowerCase().includes(fCust.toLowerCase())) continue;
-      if (fMonth && rec.month !== fMonth) continue;
 
-      if (!projMap.has(pid)) {
-        projMap.set(pid, {
-          id:       pid,
-          name:     pa.projectName || pid,
-          customer: rec.customer,
-          months:   new Map(),
+      if (!projectMap.has(pid)) {
+        // 优先从 bizBills 取产品/付款主体/账单主体（同项目同平台）
+        const bill = DATA.retail.bizBills.find(
+          b => b.project === pid && (b.platform || '') === platform
+        );
+        projectMap.set(pid, {
+          id:               pid,
+          name:             pa.projectName || pid,
+          product:          bill?.product || deriveProduct(platform, rec.entity),
+          customer:         bill?.customer || rec.customer,
+          entity:           rec.entity,
+          payer:            bill?.payer  || '—',
+          payee:            bill?.payee  || '—',
+          totalCost:        0,
+          totalRiskControl: 0,
+          months:           new Map(),
+          recordIds:        [],
         });
       }
-      const pdata  = projMap.get(pid);
-      const mkey   = rec.month;
-      if (!pdata.months.has(mkey)) pdata.months.set(mkey, { amount: 0, recordIds: [], hasAdjust: false });
-      const mdata  = pdata.months.get(mkey);
-      mdata.amount    += (pa.amount || 0);
-      mdata.recordIds.push(rec.id);
+
+      const pd = projectMap.get(pid);
+      pd.totalCost        += (pa.amount || 0);
+      pd.totalRiskControl += (rec.riskControlAmount || 0);
+
+      if (!pd.months.has(rec.month)) {
+        pd.months.set(rec.month, {
+          cost:     0,
+          deadline: deadlines[rec.month] || '—',
+        });
+      }
+      pd.months.get(rec.month).cost += (pa.amount || 0);
+
+      if (!pd.recordIds.includes(rec.id)) pd.recordIds.push(rec.id);
     }
   }
 
-  // 标记有 costChangeAudit 的月
-  const auditByRecord = new Map();
-  for (const a of (DATA.retail.costChangeAudit || [])) {
-    if (!auditByRecord.has(a.recordId)) auditByRecord.set(a.recordId, []);
-    auditByRecord.get(a.recordId).push(a);
-  }
-  for (const pdata of projMap.values()) {
-    for (const mdata of pdata.months.values()) {
-      mdata.hasAdjust = mdata.recordIds.some(id => auditByRecord.has(id));
-      mdata.audits    = mdata.recordIds.flatMap(id => auditByRecord.get(id) || []);
-    }
-  }
-
-  return projMap;
+  return [...projectMap.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
 
-// 获取 reconciliationTasks 中针对某项目的待办数量（通过 bizBill.project 对应）
-function getOpenTasksForProject(pid) {
-  return (DATA.retail.reconciliationTasks || []).filter(t => {
-    if (t.status !== '待处理') return false;
-    const bill = DATA.retail.bizBills.find(b => b.id === t.billId);
-    return bill?.project === pid;
-  }).length;
-}
+// 当月入账截止时间字段说明（隐藏 tooltip）
+const DEADLINE_TIP =
+  '财务入账截止后，运营人员调整业务账单关联成本，造成当月入账成本发生变更的，' +
+  '不对此处已入账核销成本产生影响，所有变动合并至下月成本体现，并在日志中留痕。';
 
 export function RetailProjectCostPage() {
-  const q      = getQueryParams();
-  const fProj  = (q.get('pcProj')  || '').trim();
-  const fCust  = (q.get('pcCust')  || '').trim();
-  const fMonth = (q.get('pcMonth') || '').trim();
+  const PLATFORMS = DATA.retail.costPlatforms;
+  const q = getQueryParams();
+  let plat = q.get('pcPlatform') || '';
+  if (!PLATFORMS.includes(plat)) plat = PLATFORMS[0];
 
-  const projMap   = buildProjectMonthMap(fProj, fCust, fMonth);
-  const allMonths = [...new Set(DATA.retail.costRecords.map(r => r.month))].sort();
-  const months    = fMonth ? [fMonth] : allMonths;
+  const platformTabs = PLATFORMS.map(p => {
+    const active = p === plat;
+    return `<a class="tab ${active ? 'active' : ''}" href="${buildProjTabHref(p)}">${escapeHtml(p)}</a>`;
+  }).join('');
 
-  const monthOpts = [`<option value="">全部月份</option>`,
-    ...allMonths.map(m => `<option value="${m}"${fMonth === m ? ' selected' : ''}>${m}</option>`),
-  ].join('');
+  const projects = buildProjectData(plat);
 
-  // ── 统计
-  let totalCost   = 0;
-  let adjCount    = 0;
-  let taskCount   = 0;
-  for (const pd of projMap.values()) {
-    for (const md of pd.months.values()) {
-      totalCost += md.amount;
-      if (md.hasAdjust) adjCount++;
-    }
-    taskCount += getOpenTasksForProject(pd.id);
-  }
-
-  // ── 主列表
-  const blocks = [...projMap.values()]
-    .sort((a, b) => a.id.localeCompare(b.id))
-    .map(pd => {
-      const projTotal  = [...pd.months.values()].reduce((s, m) => s + m.amount, 0);
-      const openTasks  = getOpenTasksForProject(pd.id);
-      const hasAdjust  = [...pd.months.values()].some(m => m.hasAdjust);
-
-      // 月度明细行
-      const monthRows = [...pd.months.entries()]
-        .sort((a, b) => a[0].localeCompare(b[0]))
-        .map(([month, md]) => {
-          // 关联成本记录列
-          const recLinks = md.recordIds.map(rid => {
-            const r = DATA.retail.costRecords.find(x => x.id === rid);
-            return r ? `<span style="font-size:11px;color:var(--muted)">${escapeHtml(r.platform)} / ${escapeHtml(r.entity)}</span>` : escapeHtml(rid);
-          }).join('<br>');
-
-          // 调整记录
-          const adjustHtml = md.audits.length
-            ? md.audits.map(a =>
-                `<div style="font-size:11px;color:var(--muted);margin-top:2px">
-                  [${escapeHtml(a.financePeriod || '')}] ${escapeHtml(a.action)}：${escapeHtml(a.detail)}
-                </div>`
-              ).join('')
-            : `<span style="font-size:11px;color:var(--muted)">无</span>`;
-
-          return [
-            escapeHtml(month),
-            recLinks,
-            `<b>${escapeHtml(formatMoney(md.amount))}</b>`,
-            md.hasAdjust
-              ? `<span class="pill pill-warning" style="font-size:11px">有调整</span>`
-              : `<span class="pill pill-neutral" style="font-size:11px">无</span>`,
-            `<div>${adjustHtml}</div>`,
-          ];
-        });
-
-      // 全部调整明细（展开区）
-      const allAudits = [...pd.months.values()].flatMap(m => m.audits);
-      const auditRows = allAudits.map(a => [
-        escapeHtml(a.time),
-        escapeHtml(a.operator || '—'),
-        escapeHtml(a.recordId),
-        escapeHtml(a.action),
-        escapeHtml(a.financePeriod || '—'),
-        `<span style="font-size:12px">${escapeHtml(a.detail || '—')}</span>`,
+  const blocks = projects.map(pd => {
+    // 月度明细行
+    const monthRows = [...pd.months.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([month, md]) => [
+        escapeHtml(month),
+        `<b>${escapeHtml(formatMoney(md.cost))}</b>`,
+        `<span style="font-size:12px">${escapeHtml(md.deadline)}</span>`,
       ]);
 
-      const summaryBadge = `
-        ${hasAdjust ? pill('有调整') : ''}
-        ${openTasks > 0 ? `<span class="pill pill-warning">${openTasks} 个待办</span>` : ''}
-      `;
+    const deadlineHeader = `当月入账截止时间&nbsp;<span
+      title="${escapeHtml(DEADLINE_TIP)}"
+      style="cursor:help;color:var(--muted);font-size:12px;font-weight:400"
+      aria-label="字段说明">ℹ</span>`;
 
-      return `
-        <details class="cost-customer-block" open>
-          <summary class="cost-customer-summary">
-            <span class="cost-expand-icon" aria-hidden="true">▸</span>
-            <strong>${escapeHtml(pd.id)}</strong>
-            <span style="color:var(--muted)">${escapeHtml(pd.name)}</span>
-            <span style="color:var(--muted);font-size:12px">${escapeHtml(pd.customer)}</span>
-            <span>合计：<b>${escapeHtml(formatMoney(projTotal))}</b></span>
-            <span>${summaryBadge}</span>
-            <span style="margin-left:auto">
-              <a class="link" style="font-size:12px" href="#/retail?retailTab=projectCost&pcProj=${encodeURIComponent(pd.id)}">仅看此项目</a>
-            </span>
-          </summary>
-          <div class="cost-customer-body">
-            ${Table(
-              ['月份', '归集来源（平台 / 实体）', '归集金额', '调整标记', '调整记录'],
-              monthRows
-            )}
-            ${auditRows.length ? `
-              <div style="margin-top:12px">
-                <div style="font-size:12px;font-weight:600;color:var(--muted);padding:0 0 6px">操作留痕</div>
-                ${Table(['时间', '操作人', '成本记录', '动作', '财务归属月', '明细'], auditRows)}
-              </div>` : ''}
+    const monthSection = monthRows.length
+      ? Table(['月份', '当月核销成本（未税）', deadlineHeader], monthRows)
+      : `<div style="padding:8px;color:var(--muted);font-size:13px">暂无月度归集记录</div>`;
+
+    return `
+      <details class="cost-customer-block" open>
+        <summary class="cost-customer-summary">
+          <span class="cost-expand-icon" aria-hidden="true">▸</span>
+          <strong style="min-width:90px;flex-shrink:0">${escapeHtml(pd.id)}</strong>
+          <span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--muted)" title="${escapeHtml(pd.name)}">${escapeHtml(pd.name)}</span>
+          <span style="font-size:12px;white-space:nowrap;flex-shrink:0">${escapeHtml(pd.product)}</span>
+          <span style="font-size:12px;white-space:nowrap;flex-shrink:0">${escapeHtml(pd.customer)}</span>
+          <span style="font-size:12px;white-space:nowrap;flex-shrink:0;color:var(--muted)">${escapeHtml(pd.entity)}</span>
+          <span style="white-space:nowrap;flex-shrink:0">核销：<b>${escapeHtml(formatMoney(pd.totalCost))}</b></span>
+          <span style="white-space:nowrap;flex-shrink:0">风控：<b>${escapeHtml(formatMoney(pd.totalRiskControl))}</b></span>
+          <button type="button" class="btn btn-ghost"
+            style="font-size:12px;padding:2px 8px;margin-left:auto;flex-shrink:0"
+            data-action="openProjectLog"
+            data-project-id="${escapeHtml(pd.id)}"
+            data-platform="${escapeHtml(plat)}">日志</button>
+        </summary>
+        <div class="cost-customer-body">
+          <div style="display:flex;gap:32px;flex-wrap:wrap;font-size:13px;padding:8px 4px 12px">
+            <div><span style="color:var(--muted)">付款主体：</span>${escapeHtml(pd.payer)}</div>
+            <div><span style="color:var(--muted)">账单主体：</span>${escapeHtml(pd.payee)}</div>
           </div>
-        </details>
-      `;
-    }).join('');
+          ${monthSection}
+        </div>
+      </details>
+    `;
+  }).join('');
 
   return `
-    ${PageHead('项目成本追踪', '按项目汇总各月归集成本及调整记录')}
-    ${StatGrid([
-      { value: String(projMap.size),              label: '涉及项目数' },
-      { value: formatMoney(totalCost),            label: '归集成本合计' },
-      { value: String(adjCount),                  label: '月份中有调整记录', tone: adjCount > 0 ? 'warning' : undefined },
-      { value: String(taskCount),                 label: '待处理结算核对待办', tone: taskCount > 0 ? 'warning' : undefined },
-    ])}
+    <div class="tabs tabs-linked">${platformTabs}</div>
     <div style="height:12px"></div>
     <div class="card">
       <div class="card-head">项目成本列表</div>
       <div class="card-body">
-        <div class="filters">
-          <div class="toolbar">
-            <input class="input" id="pc-proj"  placeholder="项目编号" value="${escapeHtml(fProj)}" />
-            <input class="input" id="pc-cust"  placeholder="客户关键词" value="${escapeHtml(fCust)}" />
-            <select class="select" id="pc-month">${monthOpts}</select>
-            <button type="button" class="btn btn-primary" data-action="filterProjectCost">查询</button>
-            <button type="button" class="btn" data-action="resetProjectCost">重置</button>
-          </div>
-        </div>
-        <div style="height:12px"></div>
-        ${blocks || `<div style="padding:12px 4px;color:var(--muted);font-size:13px">
-            暂无归集记录。请先在「成本管理」中为成本行分配项目。
-          </div>`}
+        ${blocks || `<div style="padding:12px 4px;color:var(--muted);font-size:13px">暂无归集记录。请先在「成本管理」中为成本行分配项目。</div>`}
       </div>
     </div>
   `;

@@ -2,7 +2,7 @@ import { DATA } from '../shared/data.js';
 import { escapeHtml, formatMoney } from '../shared/format.js';
 import { Table, pill } from '../shared/ui.js';
 import { getQueryParams } from '../shared/router.js';
-import { getPrimaryProjectId } from './financeRules.js';
+import { getPrimaryProjectId, isRecordFinanceLocked } from './financeRules.js';
 
 export const BILL_TYPES    = ['新增', '追加'];
 export const BILL_STATUSES = ['编辑中', '已同步'];
@@ -12,7 +12,7 @@ export function getLinkedCostRecords(billId) {
   return DATA.retail.costRecords.filter(r => r.linkedBizBillId === billId);
 }
 
-/** 计算某业务账单关联成本合计（已 claimed 金额之和） */
+/** 业务账单列表「待归集金额」：关联到该账单的成本单认领（分配）金额之和 */
 export function getLinkedCostTotal(billId) {
   return getLinkedCostRecords(billId).reduce((s, r) => s + (r.claimed || 0), 0);
 }
@@ -44,6 +44,7 @@ export function RetailBillsPage() {
 
   const rows = bills.map(b => {
     const isSynced = b.status === '已同步';
+    const pendingAgg = getLinkedCostTotal(b.id);
     const ops = `<span class="toolbar" style="gap:4px">
       <a class="link" data-action="openBizBillDetail" data-bill-id="${b.id}" style="font-size:13px">详情</a>
       ${isSynced ? `<a class="link" data-action="bizBillReportCustoms" data-bill-id="${b.id}" style="font-size:13px">报关</a>` : ''}
@@ -60,6 +61,7 @@ export function RetailBillsPage() {
       escapeHtml(b.project),
       escapeHtml(b.manager || ''),
       b.quoteAmount > 0 ? `<b>${formatMoney(b.quoteAmount)}</b>` : '0.00',
+      pendingAgg > 0 ? `<b>${formatMoney(pendingAgg)}</b>` : formatMoney(pendingAgg),
       b.taxExcludedSubsidy ? formatMoney(b.taxExcludedSubsidy) : '',
       escapeHtml(b.billType),
       pill(b.status),
@@ -129,7 +131,7 @@ export function RetailBillsPage() {
         </div>
         <div style="height:12px"></div>
         ${Table(
-          ['操作','ID','PMS账单ID','客户','产品名称','业务账单名称','开始日期','结束日期','项目编号','中台负责人','报价总金额','未税补贴金额','账单类型','状态'],
+          ['操作','ID','PMS账单ID','客户','产品名称','业务账单名称','开始日期','结束日期','项目编号','中台负责人','报价总金额','待归集金额','未税补贴金额','账单类型','状态'],
           rows
         )}
       </div>
@@ -158,7 +160,8 @@ export function BizBillDetailHtml(billId) {
   const excelTotal    = getExcelTotal(b);
   const isMatch       = linkedRecords.length > 0 && Math.abs(linkedTotal - excelTotal) < 0.01;
   const hasNoLink     = linkedRecords.length === 0;
-  const diffAmt       = linkedTotal - excelTotal;
+  const diffAmt       = linkedTotal - excelTotal;  // >0 成本超出凭证；<0 成本不足凭证
+  const isLocked      = b.status === '已同步';
   const matchBadge    = hasNoLink
     ? `<span class="pill pill-neutral" style="margin-left:8px">暂无成本</span>`
     : isMatch
@@ -317,61 +320,116 @@ export function BizBillDetailHtml(billId) {
         </div>
       </div>
 
-      <!-- ④b 项目一致性（结算 vs 成本归集） -->
+      <!-- ⑤ 成本校验 & 调整 -->
       <div class="card">
         <div class="card-head" style="font-weight:600">
-          项目一致性核对
-          ${
-            hasNoLink
-              ? `<span class="pill pill-neutral" style="margin-left:8px">无关联成本</span>`
-              : hasProjectMismatch || hasMissingProject
-                ? `<span class="pill pill-danger" style="margin-left:8px">存在风险</span>`
-                : `<span class="pill pill-success" style="margin-left:8px">归集一致</span>`
-          }
-        </div>
-        <div class="card-body" style="font-size:13px">
-          <div style="margin-bottom:8px;color:var(--muted)">账单所属项目：<b style="color:var(--text)">${escapeHtml(settleProj || '—')}</b>。请与每条关联成本的归集主项目比对；不一致时库存扣减与财务成本可能偏离。</div>
-          ${
-            linkedRecords.length
-              ? Table(['成本记录', '归集主项目', '与账单项目'], projRows)
-              : `<div style="color:var(--muted)">无关联成本记录</div>`
-          }
-          ${
-            hasProjectMismatch || hasMissingProject
-              ? `<div class="callout callout-warning" style="margin-top:10px;font-size:12px">
-                  <div class="callout-title">建议动作</div>
-                  前往「结算核对」查看或生成待办；在财务入账月做当期调整，勿直接改已锁定历史月数据。
-                </div>`
-              : ''
-          }
-        </div>
-      </div>
-
-      <!-- ⑤ 关联成本记录（内部追踪） -->
-      <div class="card">
-        <div class="card-head" style="font-weight:600">
-          关联成本记录${matchBadge}
+          成本校验 &amp; 调整
+          ${hasNoLink
+            ? `<span class="pill pill-neutral" style="margin-left:8px">待关联</span>`
+            : isMatch
+              ? `<span class="pill pill-success" style="margin-left:8px">✓ 匹配</span>`
+              : `<span class="pill pill-danger" style="margin-left:8px">⚠ 差额待调整</span>`}
           <div style="flex:1"></div>
-          <div style="display:flex;gap:16px;align-items:center;font-size:13px">
-            <span>关联成本合计：<b>${formatMoney(linkedTotal)}</b></span>
-            <span>Excel补贴合计：<b>${formatMoney(excelTotal)}</b></span>
-            ${!hasNoLink && !isMatch ? `<span style="color:var(--danger)">差异：<b>${formatMoney(Math.abs(diffAmt))}</b></span>` : ''}
-          </div>
+          ${!isLocked ? `<div style="display:flex;gap:6px">
+            <button class="btn btn-sm" data-action="openBillCostLink" data-bill-id="${b.id}">关联成本单</button>
+            ${!isMatch ? `<button class="btn btn-sm btn-warning" data-action="openBillCostAdjust" data-bill-id="${b.id}">调整差额</button>` : ''}
+          </div>` : ''}
         </div>
         <div class="card-body">
-          ${hasNoLink
-            ? `<div style="padding:6px 0;color:var(--muted);font-size:13px">暂未关联成本记录。请在「成本管理」中完成分配并关联本账单。</div>`
-            : Table(['成本记录ID','月份','平台','客户','二级实体','实际成本','已分配金额','状态'], linkedCostRows)}
-          ${!hasNoLink ? `
-            <div style="margin-top:10px;padding:10px 12px;background:${isMatch ? 'rgba(5,150,105,.06)' : 'rgba(220,38,38,.06)'};border:1px solid ${isMatch ? 'rgba(5,150,105,.25)' : 'rgba(220,38,38,.25)'};border-radius:var(--radius);font-size:13px">
-              <div style="display:flex;gap:24px;flex-wrap:wrap;align-items:center">
-                <div><span style="color:var(--muted)">关联成本合计：</span><b>${formatMoney(linkedTotal)}</b></div>
-                <div><span style="color:var(--muted)">Excel补贴合计：</span><b>${formatMoney(excelTotal)}</b></div>
-                ${isMatch
-                  ? `<div style="color:var(--success);font-weight:600">✓ 金额一致</div>`
-                  : `<div style="color:var(--danger);font-weight:600">✗ 差异 ${formatMoney(Math.abs(diffAmt))}，请核对</div>`}
+
+          <!-- 金额横幅：凭证 vs 已关联 vs 差额 -->
+          <div class="cost-match-banner">
+            <div class="cost-match-cell">
+              <div class="cost-match-cell-label">① 凭证金额（Excel）</div>
+              <div class="cost-match-cell-value">${formatMoney(excelTotal)}</div>
+              <div class="cost-match-cell-sub">提交须与此一致</div>
+            </div>
+            <div class="cost-match-cell">
+              <div class="cost-match-cell-label">② 已关联成本合计</div>
+              <div class="cost-match-cell-value">${formatMoney(linkedTotal)}</div>
+              <div class="cost-match-cell-sub">${linkedRecords.length} 条成本记录</div>
+            </div>
+            <div class="cost-match-cell">
+              <div class="cost-match-cell-label">③ 差额状态</div>
+              <div class="cost-match-cell-value" style="color:${hasNoLink ? 'var(--muted)' : isMatch ? 'var(--success)' : 'var(--danger)'}">
+                ${hasNoLink ? '— 待关联'
+                  : isMatch ? '✓ 无差异'
+                  : diffAmt > 0 ? `成本超出 ${formatMoney(Math.abs(diffAmt))}`
+                  : `成本不足 ${formatMoney(Math.abs(diffAmt))}`}
               </div>
-            </div>` : ''}
+              <div class="cost-match-cell-sub">
+                ${hasNoLink ? '点击右上角「关联成本单」开始'
+                  : isMatch ? '两端金额一致，可正常提交'
+                  : diffAmt > 0 ? '成本 > 凭证，需转出多余部分'
+                  : '成本 < 凭证，需转入补足差额'}
+              </div>
+            </div>
+          </div>
+
+          <!-- 操作指引：仅在金额不匹配时显示 -->
+          ${!isMatch && !hasNoLink ? `
+          <div class="callout callout-warning" style="font-size:13px;margin-bottom:16px">
+            <div class="callout-title">${diffAmt < 0
+              ? `需补入 ${formatMoney(Math.abs(diffAmt))}`
+              : `需转出 ${formatMoney(Math.abs(diffAmt))}`}</div>
+            ${diffAmt < 0
+              ? `凭证要求 <b>${formatMoney(excelTotal)}</b>，当前关联成本 <b>${formatMoney(linkedTotal)}</b>，<b>缺口 ${formatMoney(Math.abs(diffAmt))}</b>。<br>
+                 点击「调整差额」→ 选择"转入" → 从同平台可用成本单中填写转入金额，多条合计须等于缺口。<br>
+                 <span style="color:var(--muted)">可选来源：①未关联任何账单的成本单；②已关联其他账单的成本单（须双方确认后借调）。</span>`
+              : `凭证要求 <b>${formatMoney(excelTotal)}</b>，当前关联成本 <b>${formatMoney(linkedTotal)}</b>，<b>超出 ${formatMoney(Math.abs(diffAmt))}</b>。<br>
+                 点击「调整差额」→ 选择"转出" → 减少某条成本记录的认领金额，合计等于超出额，释放后可重新分配。`}
+          </div>` : ''}
+
+          <!-- 关联成本记录列表 -->
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">
+            已关联成本记录${isLocked ? '（账单已提交，只读）' : '（可修改认领额或解除关联）'}
+          </div>
+          ${linkedRecords.length
+            ? Table(
+                ['成本记录', '月份', '客户 · 实体', '实际成本', '本单认领', '归集项目', '财务状态', '操作'],
+                linkedRecords.map(r => {
+                  const pid = getPrimaryProjectId(r);
+                  const projMatch = settleProj && pid ? pid === settleProj : null;
+                  const projCell = pid
+                    ? `<a class="link" data-action="openProject" data-project="${escapeHtml(pid)}">${escapeHtml(pid)}</a>${
+                        projMatch === true  ? ' <span title="与账单项目一致" style="color:var(--success)">✓</span>'
+                        : projMatch === false ? ' <span title="归集项目不一致，提交前请确认" style="color:var(--danger)">✗</span>'
+                        : ''}`
+                    : '<span style="color:var(--warning)">未归集</span>';
+                  const lockTag = isRecordFinanceLocked(r)
+                    ? `<span class="pill pill-neutral" style="font-size:11px">已锁定</span>`
+                    : `<span style="color:var(--success);font-size:12px">可调整</span>`;
+                  const ops = !isLocked
+                    ? `<div style="display:flex;gap:5px;white-space:nowrap">
+                        ${!isRecordFinanceLocked(r) ? `<a class="link" data-action="rtlBillAdjustClaimed" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">修改认领</a>` : ''}
+                        <a class="link" style="color:var(--danger)" data-action="rtlBillUnlinkCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">解除</a>
+                      </div>`
+                    : '—';
+                  return [
+                    `<span style="font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</span>`,
+                    escapeHtml(r.month),
+                    `${escapeHtml(r.customer)}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(r.entity || '')}</span>`,
+                    formatMoney(r.actual),
+                    `<b style="color:var(--accent)">${formatMoney(r.claimed)}</b>`,
+                    projCell,
+                    lockTag,
+                    ops,
+                  ];
+                })
+              )
+            : `<div style="padding:8px 0;color:var(--muted);font-size:13px">
+                暂未关联成本记录。点击右上角「关联成本单」，从成本管理中选择同平台的月度成本单并填写认领金额。
+              </div>`}
+
+          <!-- 项目归集不一致提示 -->
+          ${(hasProjectMismatch || hasMissingProject) && linkedRecords.length ? `
+          <div class="callout callout-danger" style="margin-top:12px;font-size:12px">
+            <div class="callout-title">⚠ 归集项目与账单项目不一致</div>
+            账单所属项目：<b>${escapeHtml(settleProj || '—')}</b>。部分成本记录的归集项目与此不同（上表 ✗）。
+            提交后库存扣减与财务成本将按成本记录的归集项目计算，可能导致财务偏差。<br>
+            建议在财务入账月（${escapeHtml(DATA.retail.currentFinanceOperatingMonth || '—')}）发起当期成本调整并保留依据链；不可直接修改已锁定历史月数据。
+          </div>` : ''}
+
         </div>
       </div>
 

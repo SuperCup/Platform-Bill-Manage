@@ -103,12 +103,16 @@ export function StatGrid(stats) {
   `;
 }
 
+/**
+ * headers 支持普通字符串或含 HTML 的字符串（表头由代码控制，不转义）。
+ * 行单元格 cell 同样视为可信 HTML（调用方负责对用户数据 escapeHtml）。
+ */
 export function Table(headers, rows) {
   return `
     <div class="table-wrap">
       <table>
         <thead>
-          <tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr>
+          <tr>${headers.map((h) => `<th>${h}</th>`).join('')}</tr>
         </thead>
         <tbody>
           ${rows
@@ -123,11 +127,12 @@ export function Table(headers, rows) {
   `;
 }
 
-export function callout(type, title, body) {
+export function callout(type, title, body, options = {}) {
+  const asHtml = options.htmlBody === true;
   return `
     <div class="callout callout-${type}">
       ${title ? `<div class="callout-title">${escapeHtml(title)}</div>` : ''}
-      <div>${escapeHtml(body)}</div>
+      <div>${asHtml ? body : escapeHtml(body)}</div>
     </div>
   `;
 }

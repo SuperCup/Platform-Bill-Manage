@@ -162,6 +162,7 @@ export const DATA = {
         entity: '康师傅方便面',
         actual: 48320,
         claimed: 6000,
+        riskControlAmount: 3200,
         linkedBizBillId: 12102,
         costType: '平台活动账单',
         allocDetail: {
@@ -183,6 +184,7 @@ export const DATA = {
         entity: '康师傅水饮',
         actual: 31600,
         claimed: 6033.64,
+        riskControlAmount: 1800,
         linkedBizBillId: 12102,
         costType: '平台活动账单',
         allocDetail: {
@@ -220,6 +222,7 @@ export const DATA = {
         entity: '可口可乐',
         actual: 24160,
         claimed: 0,
+        riskControlAmount: 960,
         costType: '平台活动账单',
         allocDetail: {
           projects: [{ projectId: 'SG-260380', projectName: '可口可乐4月活动', amount: 24160 }],
@@ -283,6 +286,37 @@ export const DATA = {
         ],
       },
     ],
+    /** 成本管理「人工转入成本」：按平台 + 归属月登记；含 vouchers、editLogs、remark；登记/编辑弹窗内上传凭证 */
+    manualTransferCosts: [
+      {
+        id: 'MAN-2605-001',
+        platform: '美团闪购',
+        month: '2026-05',
+        amount: 1280,
+        costType: '风控账单',
+        projectId: 'SG-260217',
+        remark: '风控扣款复核通过',
+        operator: '刘云',
+        createdAt: '2026-05-09 11:20',
+        /** 账单凭证：含 name、mime、size、uploadedAt；可选 dataUrl（本地上传） */
+        vouchers: [
+          {
+            name: '美团风控扣款通知.pdf',
+            mime: 'application/pdf',
+            size: 245760,
+            uploadedAt: '2026-05-09 11:19',
+          },
+        ],
+        /** 人工编辑留痕（时间正序展示时由 UI 决定） */
+        editLogs: [
+          {
+            time: '2026-05-10 09:00',
+            operator: '张明',
+            summary: '金额 ¥1,200.00 → ¥1,280.00；补充备注与凭证文件名。',
+          },
+        ],
+      },
+    ],
     allocationDetails: [
       { id: 'MT-2605-001', entity: '康师傅方便面', start: '2026-05-01', end: '2026-05-07', original: 8240, allocated: 8240, status: '已分配' },
       { id: 'MT-2605-002', entity: '康师傅方便面', start: '2026-05-08', end: '2026-05-14', original: 9680, allocated: 9680, status: '已分配' },
@@ -295,9 +329,14 @@ export const DATA = {
       { id: 'RC-2604-003', month: '2026-04', platform: '淘宝闪购', customer: '可口可乐', entity: '可口可乐', project: 'SG-260380', amount: 24160, operator: '张明', time: '2026-05-03', status: '已归集' },
       { id: 'RC-2605-001', month: '2026-05', platform: '美团闪购', customer: '康师傅', entity: '康师傅方便面', project: 'SG-260217', amount: 52800, operator: '刘云', time: '—', status: '待归集（零售）' },
     ],
+    /** 财务入账截止日期（月 → 截止日期），截止后当月核销成本不再变更，差异并入下月 */
+    financeDeadlines: {
+      '2026-04': '2026-05-08',
+      '2026-05': '2026-06-08',
+    },
     /** 当前财务「可记账调整」归属月：历史月已关账记录不可直接改数，差异在本月做调整分录 */
     currentFinanceOperatingMonth: '2026-05',
-    /** 业务账单提交（已同步）后生成的核对待办，驱动运营回补成本侧调整 */
+    /** 业务账单与成本归集一致性核对的示例待办（仅 mock 数据，无独立列表页） */
     reconciliationTasks: [
       {
         id: 'RK-001',
@@ -305,7 +344,7 @@ export const DATA = {
         severity: 'high',
         title: '结算项目与成本归集项目不一致',
         detail:
-          '账单所属项目 SG-251317（屈臣氏饮料），关联成本 RTL-001 归集项目为 SG-260217（康师傅方便面）。请在「结算核对」处理并在财务当期月完成调整分录，禁止回溯修改已推送月。',
+          '账单所属项目 SG-251317（屈臣氏饮料），关联成本 RTL-001 归集项目为 SG-260217（康师傅方便面）。请在财务当期月完成调整分录，禁止回溯修改已推送月。',
         status: '待处理',
         createdAt: '2026-05-13 10:02',
         recordIds: ['RTL-001', 'RTL-002'],
@@ -330,7 +369,7 @@ export const DATA = {
         recordId: 'RTL-001',
         action: '关联业务账单',
         financePeriod: '2026-05',
-        detail: '将 ¥6,000 认领关联至业务账单 12102（mock 演示数据）',
+        detail: '将 ¥6,000 认领关联至业务账单 12102',
       },
       {
         id: 'AUD-002',
