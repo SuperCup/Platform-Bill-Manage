@@ -628,3 +628,213 @@ tbody tr:hover{ background:#f8fafc; }
   color:#fff;
 }
 .btn-warning:hover{ background:#b45309; border-color:#b45309; }
+
+/* PMS 入账库存 */
+.pms-inv-page{ padding:4px 0 16px; }
+.pms-inv-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+  flex-wrap:wrap;
+  margin-bottom:12px;
+}
+.pms-inv-actions{ flex-wrap:wrap; }
+.btn-inv-export{
+  background:#f97316;
+  border-color:#ea580c;
+  color:#fff;
+}
+.btn-inv-export:hover{ background:#ea580c; border-color:#c2410c; }
+.btn-inv-transfer{
+  background:#7c3aed;
+  border-color:#6d28d9;
+  color:#fff;
+}
+.btn-inv-transfer:hover{ background:#6d28d9; border-color:#5b21b6; }
+.btn-inv-config{
+  background:#16a34a;
+  border-color:#15803d;
+  color:#fff;
+}
+.btn-inv-config:hover{ background:#15803d; border-color:#166534; }
+.btn-inv-cost{
+  background:#e11d48;
+  border-color:#be123c;
+  color:#fff;
+}
+.btn-inv-cost:hover{ background:#be123c; border-color:#9f1239; }
+.btn-inv-deadline{
+  background:#0ea5e9;
+  border-color:#0284c7;
+  color:#fff;
+}
+.btn-inv-deadline:hover{ background:#0284c7; border-color:#0369a1; }
+.btn-inv-refresh{
+  background:#e5e7eb;
+  border-color:#d1d5db;
+  color:#374151;
+}
+.btn-inv-refresh:hover{ background:#d1d5db; border-color:#9ca3af; }
+.pms-inv-filters{ margin-bottom:0; }
+.pms-inv-filter-item{
+  display:flex;
+  flex-direction:column;
+  gap:4px;
+}
+.pms-inv-filter-label{
+  font-size:12px;
+  color:var(--muted);
+  white-space:nowrap;
+}
+.pms-inv-search-wrap{
+  position:relative;
+  display:inline-flex;
+  align-items:center;
+}
+.pms-inv-search-wrap .input{ padding-right:28px; }
+.pms-inv-search-icon{
+  position:absolute;
+  right:8px;
+  color:#94a3b8;
+  font-size:14px;
+  pointer-events:none;
+}
+.pms-inv-clear{
+  position:absolute;
+  right:24px;
+  width:18px;
+  height:18px;
+  border:none;
+  background:transparent;
+  color:#94a3b8;
+  cursor:pointer;
+  font-size:14px;
+  line-height:1;
+  padding:0;
+}
+.pms-inv-clear:hover{ color:#64748b; }
+.pms-inv-table-wrap{ overflow-x:auto; }
+.pms-inv-table{
+  width:100%;
+  border-collapse:collapse;
+  font-size:13px;
+}
+.pms-inv-table th,
+.pms-inv-table td{
+  padding:10px 12px;
+  border-bottom:1px solid var(--border);
+  vertical-align:top;
+}
+.pms-inv-table thead th{
+  background:#fafafa;
+  font-weight:600;
+  white-space:nowrap;
+}
+.pms-inv-table tbody tr.inv-row-alt{ background:#fafbfc; }
+.inv-project{ min-width:200px; max-width:280px; }
+.inv-proj-id{
+  display:inline-block;
+  font-weight:600;
+  margin-bottom:2px;
+}
+.inv-proj-name{
+  font-size:12px;
+  color:var(--text);
+  line-height:1.4;
+}
+.inv-th-num,
+.inv-num{
+  text-align:right;
+  white-space:nowrap;
+  font-variant-numeric:tabular-nums;
+}
+.inv-num-zero{ color:#38bdf8; }
+.inv-num-neg{ color:#dc2626; }
+.inv-ops{ white-space:nowrap; text-align:center; }
+.inv-dir{ font-weight:600; white-space:nowrap; }
+.inv-dir-in{ color:#16a34a; }
+.inv-dir-out{ color:#dc2626; }
+.inv-detail-amt{ font-variant-numeric:tabular-nums; }
+
+/* 到店营销 · 修改记录 */
+.mkt-change-page{ padding:4px 0 16px; }
+.mkt-change-desc{
+  margin:6px 0 14px;
+  font-size:13px;
+  color:var(--muted);
+  line-height:1.6;
+  max-width:960px;
+}
+.mkt-change-filters{ margin-bottom:0; }
+.mkt-amt-pos{ color:#16a34a; font-weight:600; font-variant-numeric:tabular-nums; }
+.mkt-amt-neg{ color:#dc2626; font-weight:600; font-variant-numeric:tabular-nums; }
+.mkt-change-detail .mkt-section-title{ font-size:14px; font-weight:600; color:var(--text); }
+.mkt-change-detail .table-wrap table{ font-size:13px; }
+.mkt-change-detail .table-wrap td:first-child{ font-weight:500; white-space:nowrap; }
+
+/* 到店营销 · 项目详情 */
+.mkt-proj-detail{ padding:4px 0 20px; }
+.mkt-proj-title{ font-size:18px; margin-bottom:14px; }
+.mkt-proj-card{ margin-bottom:12px; }
+.mkt-proj-card .card-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:12px;
+}
+.mkt-proj-progress-row{
+  display:flex;
+  flex-wrap:wrap;
+  gap:20px 32px;
+}
+.mkt-proj-progress-item{ display:flex; flex-direction:column; gap:2px; }
+.mkt-proj-progress-label{ font-size:12px; color:var(--muted); }
+.mkt-proj-progress-val{ font-size:14px; font-weight:600; }
+.mkt-proj-detail-link{ margin-left:8px; font-size:13px; font-weight:500; }
+.mkt-recorded-cost-detail .table-wrap table{ font-size:13px; }
+.mkt-proj-progress-sub{ font-size:12px; color:var(--muted); }
+.mkt-proj-kv-grid{
+  display:grid;
+  grid-template-columns:repeat(3, minmax(0, 1fr));
+  gap:10px 24px;
+}
+@media (max-width:900px){
+  .mkt-proj-kv-grid{ grid-template-columns:1fr; }
+}
+.mkt-proj-kv{
+  display:flex;
+  gap:8px;
+  font-size:13px;
+  padding:6px 0;
+  border-bottom:1px dashed var(--border);
+}
+.mkt-proj-k{
+  flex:0 0 100px;
+  color:var(--muted);
+}
+.mkt-proj-v{ flex:1; word-break:break-all; }
+.mkt-proj-actions{ margin-top:14px; justify-content:flex-end; }
+.mkt-batch-table-wrap{ overflow-x:auto; }
+.mkt-section-title{ font-weight:600; font-size:14px; }
+.mkt-cost-coll-section{ margin-top:12px; }
+.mkt-cost-coll-head{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  margin-bottom:10px;
+}
+.mkt-cost-coll-tabs{ margin-bottom:0; }
+.mkt-cost-coll-tabs .tab{
+  border:none;
+  background:transparent;
+  cursor:pointer;
+  padding:10px 14px;
+}
+.drawer .mkt-cost-coll-drawer .mkt-cost-coll-table-wrap{
+  max-height:calc(100vh - 220px);
+  overflow:auto;
+}
+.drawer:has(.mkt-cost-coll-drawer){
+  width:min(960px, 94vw);
+}

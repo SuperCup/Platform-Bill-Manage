@@ -4,6 +4,12 @@ import { closeModal, openModal, toast, callout, Table } from './shared/ui.js';
 import { getRoute, getSubTab, getQueryParams } from './shared/router.js';
 import { DATA } from './shared/data.js';
 import { RetailPage, mergeRetailCostQuery } from './retail/page.js';
+import { PmsPage } from './pms/page.js';
+import { buildPmsInvDetailHtml } from './pms/inventory.js';
+import { MarketingPage } from './marketing/page.js';
+import { buildMktChangeRecordDetailHtml } from './marketing/change-records.js';
+import { buildMktCostCollectionDrawerHtml, openMktCostCollectionDrawer } from './marketing/cost-collection.js';
+import { openMktRecordedCostDetailDrawer } from './marketing/recorded-cost-detail.js';
 import {
   BizBillDetailHtml,
   getLinkedCostRecords,
@@ -42,6 +48,32 @@ function closeDrawer() {
   bd.classList.add('hidden');
   bd.setAttribute('aria-hidden', 'true');
   document.getElementById('drawer-body').innerHTML = '';
+}
+
+function openPmsInvDetailDrawer({ logKey, projId, projName, product, filters = {} }) {
+  openDrawer({
+    title: `出入库明细 · ${projName}`,
+    bodyHtml: buildPmsInvDetailHtml(logKey, projId, projName, product, filters),
+  });
+}
+
+function openMktCostCollectionDrawerUi(projectId, channel = 'wechat') {
+  openMktCostCollectionDrawer(projectId, channel, openDrawer);
+}
+
+function openMktChangeDetailDrawer(traceId, filters = {}) {
+  const rec = (DATA.marketing?.modificationRecords || []).find((r) => r.traceId === traceId);
+  const title = rec
+    ? `修改记录 · ${rec.activityId || traceId}`
+    : `修改记录 · ${traceId}`;
+  openDrawer({
+    title,
+    bodyHtml: buildMktChangeRecordDetailHtml(rec, filters),
+  });
+}
+
+function openMktRecordedCostDetailUi(projectId, filters = {}) {
+  openMktRecordedCostDetailDrawer(projectId, filters, openDrawer);
 }
 
 document.getElementById('drawer-close').addEventListener('click', closeDrawer);
@@ -437,10 +469,14 @@ function openRtlManualCostModalFromClick(hostEl) {
 // ── Routing ─────────────────────────────────────────────────────────────────
 const ROUTES = {
   '/retail': RetailPage,
+  '/pms': PmsPage,
+  '/marketing': MarketingPage,
 };
 
 const SYSTEM_SWITCH = [
   { path: '/retail', href: '#/retail', label: '到家运营管理' },
+  { path: '/marketing', href: '#/marketing?marketingTab=changeRecords', label: '到店营销' },
+  { path: '/pms', href: '#/pms?pmsTab=inventory', label: 'PMS' },
 ];
 
 const PAGE_MENUS = {
@@ -449,10 +485,25 @@ const PAGE_MENUS = {
     { tab: 'projectCost', label: '项目成本' },
     { tab: 'bills',       label: '业务账单' },
   ],
+  '/marketing': [
+    { tab: 'changeRecords', label: '修改记录' },
+    { tab: 'projectDetail', label: '项目详情' },
+  ],
+  '/pms': [
+    { tab: 'inventory', label: 'PMS库存' },
+  ],
 };
 
-function scopeFromPath() { return 'retail'; }
-function defaultTabForPath() { return 'costMgmt'; }
+function scopeFromPath(path) {
+  if (path === '/pms') return 'pms';
+  if (path === '/marketing') return 'marketing';
+  return 'retail';
+}
+function defaultTabForPath(path) {
+  if (path === '/pms') return 'inventory';
+  if (path === '/marketing') return 'changeRecords';
+  return 'costMgmt';
+}
 
 function render() {
   const h = window.location.hash || '';
@@ -702,6 +753,219 @@ document.addEventListener('click', (e) => {
   if (action === 'saveBizBillEdit') {
     toast('保存', `账单 ${el.dataset.billId} 已保存（mock）。`);
     closeDrawer();
+    return;
+  }
+  // ── PMS 入账库存 ────────────────────────────────────────────────────────────
+  if (action === 'pmsInvFilterApply') {
+    const period = document.getElementById('pms-inv-period')?.value?.trim() || '';
+    const proj = document.getElementById('pms-inv-proj')?.value?.trim() || '';
+    const product = document.getElementById('pms-inv-product')?.value?.trim() || '';
+    const cust = document.getElementById('pms-inv-cust')?.value?.trim() || '';
+    const p = new URLSearchParams();
+    p.set('pmsTab', 'inventory');
+    if (period) p.set('pmsPeriod', period);
+    if (proj) p.set('pmsProj', proj);
+    if (product) p.set('pmsProduct', product);
+    if (cust) p.set('pmsCust', cust);
+    window.location.hash = `#/pms?${p.toString()}`;
+    return;
+  }
+  if (action === 'pmsInvClearCust') {
+    const p = new URLSearchParams(window.location.hash.split('?')[1] || '');
+    p.set('pmsTab', 'inventory');
+    p.delete('pmsCust');
+    window.location.hash = `#/pms?${p.toString()}`;
+    return;
+  }
+  if (action === 'pmsInvRefresh') {
+    render();
+    toast('刷新', '入账库存列表已更新。');
+    return;
+  }
+  if (action === 'pmsInvExport') {
+    toast('导出', '正在导出入账库存明细（mock）。');
+    return;
+  }
+  if (action === 'pmsInvTransfer') {
+    toast('库存转移', '打开库存转移流程（mock）。');
+    return;
+  }
+  if (action === 'pmsInvProductConfig') {
+    toast('项目产品配置', '打开项目产品配置（mock）。');
+    return;
+  }
+  if (action === 'pmsInvBizCost') {
+    toast('业务成本', '跳转业务成本视图（mock）。');
+    return;
+  }
+  if (action === 'pmsInvDeadline') {
+    toast('入账截止', '查看 / 设置入账截止时间（mock）。');
+    return;
+  }
+  if (action === 'openPmsInvProject') {
+    e.preventDefault();
+    const pid = el.dataset.projectId || '';
+    const proj = DATA.pms?.projects?.find((p) => p.id === pid);
+    toast('项目', proj ? `${pid} · ${proj.name}` : `项目 ${pid}（mock 详情）`);
+    return;
+  }
+  // ── 到店营销 · 修改记录 ───────────────────────────────────────────────────────
+  if (action === 'mktChangeFilterApply') {
+    const platform = document.getElementById('mkt-ch-platform')?.value?.trim() || '';
+    const src = document.getElementById('mkt-ch-src')?.value?.trim() || '';
+    const dst = document.getElementById('mkt-ch-dst')?.value?.trim() || '';
+    const eventType = document.getElementById('mkt-ch-event')?.value?.trim() || '';
+    const operator = document.getElementById('mkt-ch-operator')?.value?.trim() || '';
+    const opFrom = document.getElementById('mkt-ch-op-from')?.value?.trim() || '';
+    const opTo = document.getElementById('mkt-ch-op-to')?.value?.trim() || '';
+    const p = new URLSearchParams();
+    p.set('marketingTab', 'changeRecords');
+    if (platform) p.set('mktPlatform', platform);
+    if (src) p.set('mktSrcProj', src);
+    if (dst) p.set('mktDstProj', dst);
+    if (eventType) p.set('mktEventType', eventType);
+    if (operator) p.set('mktOperator', operator);
+    if (opFrom) p.set('mktOpFrom', opFrom.replace('T', ' '));
+    if (opTo) p.set('mktOpTo', opTo.replace('T', ' '));
+    p.delete('mktPage');
+    window.location.hash = `#/marketing?${p.toString()}`;
+    return;
+  }
+  if (action === 'mktChangeFilterReset') {
+    window.location.hash = '#/marketing?marketingTab=changeRecords';
+    return;
+  }
+  if (action === 'openMktChangeDetail') {
+    e.preventDefault();
+    const traceId = el.dataset.traceId || '';
+    openMktChangeDetailDrawer(traceId, {});
+    return;
+  }
+  if (action === 'mktChangeDetailFilterApply' || action === 'mktChangeDetailFilterReset') {
+    const host = el.closest('.mkt-change-detail');
+    if (!host) return;
+    const traceId = host.dataset.traceId || '';
+    const filters =
+      action === 'mktChangeDetailFilterReset'
+        ? {}
+        : {
+            monthFrom: document.getElementById('mkt-detail-month-from')?.value?.trim() || '',
+            monthTo: document.getElementById('mkt-detail-month-to')?.value?.trim() || '',
+          };
+    openMktChangeDetailDrawer(traceId, filters);
+    return;
+  }
+  if (action === 'openMktChangeProject') {
+    e.preventDefault();
+    const pid = el.dataset.projectId || '';
+    if (DATA.marketing?.projectDetails?.[pid]) {
+      window.location.hash = `#/marketing?marketingTab=projectDetail&mktProject=${encodeURIComponent(pid)}`;
+      render();
+    } else {
+      toast('项目', `查看项目 ${pid}（mock）`);
+    }
+    return;
+  }
+  if (action === 'openMktRecordedCostDetail') {
+    e.preventDefault();
+    const pid = el.dataset.projectId || 'SG-260217';
+    openMktRecordedCostDetailUi(pid, {});
+    return;
+  }
+  if (
+    action === 'mktRecordedCostFilterApply' ||
+    action === 'mktRecordedCostFilterReset' ||
+    action === 'mktRecordedCostPickMonth'
+  ) {
+    e.preventDefault();
+    const host = el.closest('.mkt-recorded-cost-detail');
+    const pid =
+      el.dataset.projectId || host?.dataset.projectId || 'SG-260217';
+    const filters =
+      action === 'mktRecordedCostFilterReset'
+        ? {}
+        : {
+            month:
+              action === 'mktRecordedCostPickMonth'
+                ? el.dataset.month || ''
+                : document.getElementById('mkt-recorded-month')?.value?.trim() || '',
+          };
+    openMktRecordedCostDetailUi(pid, filters);
+    return;
+  }
+  if (action === 'mktOpenCostCollection') {
+    const pid = el.dataset.projectId || 'SG-260217';
+    openMktCostCollectionDrawerUi(pid, 'wechat');
+    return;
+  }
+  if (action === 'mktCostCollTab') {
+    const pid = el.dataset.projectId || '';
+    const channel = el.dataset.channel || 'wechat';
+    document.getElementById('drawer-body').innerHTML = buildMktCostCollectionDrawerHtml(pid, channel);
+    const proj = DATA.marketing?.projectDetails?.[pid];
+    document.getElementById('drawer-title').textContent = proj ? `成本归集 · ${proj.id}` : '成本归集';
+    return;
+  }
+  if (action === 'mktCostCollAdd' || action === 'mktCostCollRefresh' || action === 'mktCostCollExport') {
+    const label = action === 'mktCostCollAdd' ? '新增' : action === 'mktCostCollRefresh' ? '刷新' : '导出';
+    toast(label, `归集记录${label}（mock）`);
+    return;
+  }
+  if (action === 'mktCostCollDetail') {
+    e.preventDefault();
+    toast('详情', `结算单 ${el.dataset.settleNo || ''}（mock）`);
+    return;
+  }
+  if (action === 'closeModalBtn') {
+    closeModal();
+    return;
+  }
+  if (action === 'mktProjDoc' || action === 'mktProjWarnUser' || action === 'mktProjSyncPms') {
+    const labels = { mktProjDoc: '文档', mktProjWarnUser: '预警用户', mktProjSyncPms: '从PMS同步' };
+    toast(labels[action] || '操作', `${labels[action]}（mock）`);
+    return;
+  }
+  if (action === 'mktBatchExtParams' || action === 'mktBatchExport' || action === 'mktBatchImport' || action === 'mktBatchRefresh') {
+    const labels = { mktBatchExtParams: '扩展参数管理', mktBatchExport: '导出', mktBatchImport: '导入', mktBatchRefresh: '刷新' };
+    toast(labels[action] || '操作', `批次${labels[action]}（mock）`);
+    return;
+  }
+  if (action === 'openMktChangeActivity') {
+    e.preventDefault();
+    const aid = el.dataset.activityId || '';
+    toast('活动', `查看活动 ${aid}（mock）`);
+    return;
+  }
+
+  if (action === 'openPmsInvDetail') {
+    e.preventDefault();
+    const logKey = el.dataset.logKey || '';
+    const projId = el.dataset.projectId || '';
+    const projName = el.dataset.projectName || '';
+    const product = el.dataset.product || '';
+    openPmsInvDetailDrawer({ logKey, projId, projName, product });
+    return;
+  }
+  if (action === 'pmsInvDetailFilterApply' || action === 'pmsInvDetailFilterReset') {
+    const host = el.closest('.pms-inv-detail');
+    if (!host) return;
+    const filters =
+      action === 'pmsInvDetailFilterReset'
+        ? {}
+        : {
+            type: document.getElementById('pms-inv-detail-type')?.value?.trim() || '',
+            direction: document.getElementById('pms-inv-detail-dir')?.value?.trim() || '',
+            status: document.getElementById('pms-inv-detail-status')?.value?.trim() || '',
+            dateFrom: document.getElementById('pms-inv-detail-from')?.value?.trim() || '',
+            dateTo: document.getElementById('pms-inv-detail-to')?.value?.trim() || '',
+          };
+    openPmsInvDetailDrawer({
+      logKey: host.dataset.logKey || '',
+      projId: host.dataset.projectId || '',
+      projName: host.dataset.projectName || '',
+      product: host.dataset.product || '',
+      filters,
+    });
     return;
   }
   if (action === 'syncFromPms' || action === 'createBizBill') {

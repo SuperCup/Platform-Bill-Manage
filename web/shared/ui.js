@@ -30,6 +30,10 @@ export function pill(status) {
     '可认领': 'pill-success',
     '一致': 'pill-success',
     '不一致': 'pill-danger',
+    '待入账': 'pill-warning',
+    '已入账': 'pill-success',
+    '已上报': 'pill-success',
+    '已停止': 'pill-neutral',
   };
   const cls = map[status] || 'pill-neutral';
   return `<span class="pill ${cls}">${escapeHtml(status)}</span>`;
