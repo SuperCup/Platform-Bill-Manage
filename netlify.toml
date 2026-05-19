@@ -1,0 +1,9 @@
+# Netlify: static deploy of web/ (no build step)
+[build]
+  publish = "web"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "SAMEORIGIN"
+    X-Content-Type-Options = "nosniff"

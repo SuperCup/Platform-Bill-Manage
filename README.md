@@ -13,6 +13,23 @@ No build tools are required.
 - **Option A (simplest)**: open `web/index.html` directly in your browser.
 - **Option B (recommended)**: serve the `web/` folder via a local static server (any server works).
 
+```bash
+cd web && python -m http.server 8080
+# http://localhost:8080/
+```
+
+## Deploy (public access)
+
+| Platform | Config | Docs |
+|----------|--------|------|
+| **Netlify** | `netlify.toml` (publish `web/`) | [docs/deploy.md](docs/deploy.md) |
+| **GitHub Pages** | `.github/workflows/deploy-pages.yml` | Enable **Pages → GitHub Actions** in repo settings |
+
+After deploy:
+
+- GitHub Pages: `https://supercup.github.io/Platform-Bill-Manage/`
+- Netlify: your `*.netlify.app` URL (or custom domain)
+
 ## Pages
 
 - `#/arch` — system communication architecture diagram (SVG)
