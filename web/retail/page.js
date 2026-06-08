@@ -152,8 +152,6 @@ function RetailCostMgmtAuto(plat, q) {
         : `<span style="color:var(--muted);font-size:12px">未分配</span>`;
 
       const ops = `<span class="toolbar" style="gap:6px;flex-wrap:wrap">
-        <button type="button" class="btn btn-ghost" data-action="allocCostToProject"
-          data-record-id="${escapeHtml(r.id)}">分配项目</button>
         <button type="button" class="btn btn-ghost" data-action="openRetailAllocDetail"
           data-record-id="${escapeHtml(r.id)}">明细</button>
       </span>`;
