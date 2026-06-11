@@ -5,7 +5,7 @@ import { getSubTab, getQueryParams } from '../shared/router.js';
 import {
   RetailBillsPage,
   isAllowedBizCustomer,
-  dedupeCostRecordsByEntityMonth,
+  getCostAsOfToday,
 } from './bills.js';
 import { RetailProjectCostPage } from './project-cost.js';
 
@@ -97,10 +97,8 @@ function RetailCostMgmtAuto(plat, q) {
   const monthFilter = (q.get('retailCostMonth') || '').trim();
   const custKw      = (q.get('retailCostCust')   || '').trim().toLowerCase();
 
-  let raw = dedupeCostRecordsByEntityMonth(
-    DATA.retail.costRecords.filter(
-      (r) => r.platform === plat && isAllowedBizCustomer(r.customer)
-    )
+  let raw = DATA.retail.costRecords.filter(
+    (r) => r.platform === plat && isAllowedBizCustomer(r.customer)
   );
   if (monthFilter) raw = raw.filter(r => r.month === monthFilter);
 
@@ -108,11 +106,12 @@ function RetailCostMgmtAuto(plat, q) {
   for (const r of raw) {
     if (custKw && !r.customer.toLowerCase().includes(custKw)) continue;
     if (!byCustomer.has(r.customer)) {
-      byCustomer.set(r.customer, { customer: r.customer, rows: [], actual: 0, allocated: 0 });
+      byCustomer.set(r.customer, { customer: r.customer, rows: [], actual: 0, asOfToday: 0, allocated: 0 });
     }
     const g = byCustomer.get(r.customer);
     const pending = r.actual - r.claimed;
     g.actual    += r.actual;
+    g.asOfToday += getCostAsOfToday(r);
     g.allocated += r.claimed;
     g.rows.push({ ...r, allocated: r.claimed, pending, status: pending <= 0 ? '已分配' : '待分配' });
   }
@@ -153,10 +152,12 @@ function RetailCostMgmtAuto(plat, q) {
       </span>`;
 
       return [
+        `<span style="font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</span>`,
         escapeHtml(r.month),
         escapeHtml(r.customer),
         escapeHtml(r.entity),
         escapeHtml(r.costType || '平台活动账单'),
+        `<b>${escapeHtml(formatMoney(getCostAsOfToday(r)))}</b>`,
         `<b>${escapeHtml(formatMoney(r.actual))}</b>`,
         escapeHtml(formatMoney(r.allocated)),
         `<span style="color:${r.pending > 0 ? '#d97706' : '#059669'};font-weight:700">${escapeHtml(formatMoney(r.pending))}</span>`,
@@ -172,6 +173,7 @@ function RetailCostMgmtAuto(plat, q) {
         <summary class="cost-customer-summary">
           <span class="cost-expand-icon" aria-hidden="true">▸</span>
           <strong>${escapeHtml(g.customer)}</strong>
+          <span>截止当日：<b>${escapeHtml(formatMoney(g.asOfToday))}</b></span>
           <span>汇总实际：<b>${escapeHtml(formatMoney(g.actual))}</b></span>
           <span>已分配：<b>${escapeHtml(formatMoney(g.allocated))}</b></span>
           <span>待分配：<b style="color:${pendingTotal > 0 ? '#d97706' : '#059669'}">${escapeHtml(formatMoney(pendingTotal))}</b></span>
@@ -179,7 +181,7 @@ function RetailCostMgmtAuto(plat, q) {
         </summary>
         <div class="cost-customer-body">
           ${Table(
-            ['月份', '客户名称', '二级实体', '成本类型', '实际成本', '已分配', '待分配', '状态', '归集项目', '业务账单', '操作'],
+            ['成本记录ID', '月份', '客户名称', '二级实体', '成本类型', '截止当日成本', '实际成本', '已分配', '待分配', '状态', '归集项目', '业务账单', '操作'],
             innerRows
           )}
         </div>

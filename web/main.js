@@ -15,6 +15,8 @@ import {
   getLinkedCostRecords,
   getExcelTotal,
   getBillSourcesForCostAdd,
+  getUnallocatedCostSources,
+  costTransferableMax,
   billIdEq,
   customerMatches,
   ALLOWED_BIZ_CUSTOMERS,
@@ -1235,12 +1237,30 @@ document.addEventListener('click', (e) => {
     return clone;
   }
 
-  // ── 业务账单详情：转入成本（仅可从其他业务账单已关联成本按单据转入） ──────────
+  // ── 业务账单详情：转入成本（从未分配成本 / 从其他业务账单按单据转入） ──────────
   if (action === 'openBillCostAdd') {
     const billId = Number(el.dataset.billId || '');
     const bizBill = DATA.retail.bizBills.find(b => b.id === billId);
     if (!bizBill) { toast('提示', '未找到业务账单。'); return; }
     if (bizBill.status === '已同步') { toast('提示', '账单已提交，不可修改关联。'); return; }
+
+    const unallocRecords = getUnallocatedCostSources(bizBill, billId);
+    const unallocRowsHtml = unallocRecords.length > 0
+      ? unallocRecords.map((r) => {
+          const maxAmt = costTransferableMax(r, billId);
+          return `<tr>
+            <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</td>
+            <td style="padding:6px 8px">${escapeHtml(r.month)}</td>
+            <td style="padding:6px 8px">${escapeHtml(r.entity || '')}</td>
+            <td style="padding:6px 8px;text-align:right">${escapeHtml(formatMoney(r.actual))}</td>
+            <td style="padding:6px 8px;text-align:right;font-weight:600;color:var(--success)">${escapeHtml(formatMoney(maxAmt))}</td>
+            <td style="padding:6px 8px">
+              <input type="number" class="input bca-unalloc-amt" data-rec-id="${escapeHtml(r.id)}"
+                min="0" max="${maxAmt}" step="0.01" style="width:110px" placeholder="认领金额" />
+            </td>
+          </tr>`;
+        }).join('')
+      : `<tr><td colspan="6" style="padding:12px;color:var(--muted)">该客户下暂无未关联业务账单的可用成本（样例：RTL-012）</td></tr>`;
 
     const billSrcBills = getBillSourcesForCostAdd(bizBill, billId)
       .map((b) => ({
@@ -1248,6 +1268,8 @@ document.addEventListener('click', (e) => {
         records: getLinkedCostRecords(b.id).filter((r) => !isRecordFinanceLocked(r) && (r.claimed || 0) > 0),
       }))
       .filter((x) => x.records.length > 0);
+
+    const tabStyle = (active) => `padding:8px 14px;cursor:pointer;font-size:13px;border:none;background:none;border-bottom:2px solid ${active ? 'var(--accent)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-weight:${active ? '600' : '400'};`;
 
     const billRowsHtml = billSrcBills.length > 0 ? billSrcBills.map(({ bill: sb, records }) => {
       const shortName = sb.name.length > 40 ? sb.name.slice(0, 40) + '…' : sb.name;
@@ -1278,34 +1300,71 @@ document.addEventListener('click', (e) => {
       return head + recRows;
     }).join('') : `<tr><td colspan="5" style="padding:12px;color:var(--muted)">该客户下暂无符合条件的其他业务账单</td></tr>`;
 
+    const hasAnySource = unallocRecords.length > 0 || billSrcBills.length > 0;
+
     openModal({
-      title: `转入成本 · 账单 ${billId}（${escapeHtml(bizBill.customer)}）· 可选账单 ${billSrcBills.length} 张`,
+      title: `转入成本 · 账单 ${billId}（${escapeHtml(bizBill.customer)}）· 未分配 ${unallocRecords.length} 条 / 账单 ${billSrcBills.length} 张`,
       bodyHtml: `
-        <div class="callout callout-info" style="margin-bottom:10px;font-size:13px">
-          <div class="callout-title">从其他业务账单转入</div>
-          列出同客户（${escapeHtml(bizBill.customer)}）、未提交至 PMS 且有关联成本的其他业务账单，并展开到<b>具体成本单据</b>。
-          请逐笔填写划拨金额；若来源账单下成本来自多个月份或实体，须根据具体单据划拨。<br>
-          <span style="color:var(--muted)">部分划拨时系统会自动从原单据拆分出新单据并关联本账单（金额守恒、全程留痕）。</span>
+        <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:12px">
+          <button type="button" class="bca-tab" data-bca-tab="unalloc" style="${tabStyle(true)}">从未分配成本</button>
+          <button type="button" class="bca-tab" data-bca-tab="bill" style="${tabStyle(false)}">从其他业务账单</button>
         </div>
-        <div class="table-wrap" style="max-height:320px;overflow-y:auto">
-          <table>
-            <thead><tr><th>成本单据</th><th>月份</th><th>二级实体</th><th>可划拨</th><th>划拨金额</th></tr></thead>
-            <tbody>${billRowsHtml}</tbody>
-          </table>
+        <div id="bca-panel-unalloc">
+          <div class="callout callout-info" style="margin-bottom:10px;font-size:13px">
+            <div class="callout-title">从未分配成本认领</div>
+            列出成本管理中<b>未关联任何业务账单</b>的成本记录（${escapeHtml(bizBill.customer)}）。填写认领金额后，该成本记录将关联到本账单。
+          </div>
+          <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+            <table>
+              <thead><tr><th>成本记录ID</th><th>月份</th><th>二级实体</th><th>实际成本</th><th>可认领</th><th>认领金额</th></tr></thead>
+              <tbody>${unallocRowsHtml}</tbody>
+            </table>
+          </div>
+        </div>
+        <div id="bca-panel-bill" style="display:none">
+          <div class="callout callout-info" style="margin-bottom:10px;font-size:13px">
+            <div class="callout-title">从其他业务账单转入</div>
+            列出同客户、未提交至 PMS 且有关联成本的其他业务账单，并展开到<b>具体成本记录ID</b>。
+            请逐笔填写划拨金额；若来源账单下成本来自多个月份或实体，须根据具体单据划拨。<br>
+            <span style="color:var(--muted)">部分划拨时系统会自动从原单据拆分出新单据并关联本账单（金额守恒、全程留痕）。</span>
+          </div>
+          <div class="table-wrap" style="max-height:280px;overflow-y:auto">
+            <table>
+              <thead><tr><th>成本记录ID</th><th>月份</th><th>二级实体</th><th>可划拨</th><th>划拨金额</th></tr></thead>
+              <tbody>${billRowsHtml}</tbody>
+            </table>
+          </div>
         </div>
         <div style="margin-top:10px;font-size:13px">合计转入：<b id="bca-sum">${formatMoney(0)}</b></div>
         <div id="bca-err" style="display:none;color:var(--danger);font-size:13px;margin-top:10px"></div>`,
       footerHtml: `
         <button class="btn" id="bca-cancel">取消</button>
-        <button class="btn btn-primary" id="bca-ok" ${!billSrcBills.length ? 'disabled' : ''}>确认转入</button>`,
+        <button class="btn btn-primary" id="bca-ok" ${!hasAnySource ? 'disabled' : ''}>确认转入</button>`,
+    });
+
+    document.querySelectorAll('.bca-tab').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        const tab = btn.dataset.bcaTab;
+        document.getElementById('bca-panel-unalloc').style.display = tab === 'unalloc' ? '' : 'none';
+        document.getElementById('bca-panel-bill').style.display = tab === 'bill' ? '' : 'none';
+        document.querySelectorAll('.bca-tab').forEach((b) => {
+          const a = b.dataset.bcaTab === tab;
+          b.style.borderBottom = `2px solid ${a ? 'var(--accent)' : 'transparent'}`;
+          b.style.color = a ? 'var(--accent)' : 'var(--muted)';
+          b.style.fontWeight = a ? '600' : '400';
+        });
+        updateBcaSum();
+      });
     });
 
     const updateBcaSum = () => {
-      const s = [...document.querySelectorAll('.bca-rec-amt')].reduce((acc, i) => acc + (Number(i.value) || 0), 0);
+      const unallocVisible = document.getElementById('bca-panel-unalloc')?.style.display !== 'none';
+      const sel = unallocVisible ? '.bca-unalloc-amt' : '.bca-rec-amt';
+      const s = [...document.querySelectorAll(sel)].reduce((acc, i) => acc + (Number(i.value) || 0), 0);
       const sumEl = document.getElementById('bca-sum');
       if (sumEl) sumEl.textContent = formatMoney(s);
     };
-    document.querySelectorAll('.bca-rec-amt').forEach((inp) => inp.addEventListener('input', updateBcaSum));
+    document.querySelectorAll('.bca-unalloc-amt, .bca-rec-amt').forEach((inp) => inp.addEventListener('input', updateBcaSum));
 
     document.getElementById('bca-cancel')?.addEventListener('click', closeModal);
 
@@ -1314,34 +1373,68 @@ document.addEventListener('click', (e) => {
       if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
       const showErr = (msg) => { if (errEl) { errEl.style.display = 'block'; errEl.textContent = msg; } };
 
-      const toTransfer = [];
-      for (const inp of document.querySelectorAll('.bca-rec-amt')) {
-        const val = inp.value.trim();
-        if (!val) continue;
-        const amt = Number(val);
-        const recId = inp.dataset.recId;
-        const srcBillId = Number(inp.dataset.srcBillId);
-        const rec = DATA.retail.costRecords.find((r) => r.id === recId);
-        if (!rec) continue;
-        if (!Number.isFinite(amt) || amt <= 0) { showErr(`单据 ${recId} 划拨金额须大于 0。`); return; }
-        if (amt > rec.claimed + 0.001) {
-          showErr(`单据 ${recId} 划拨金额（${formatMoney(amt)}）超过该单据可划拨（${formatMoney(rec.claimed)}）。`);
-          return;
+      const unallocVisible = document.getElementById('bca-panel-unalloc')?.style.display !== 'none';
+
+      if (unallocVisible) {
+        const toLink = [];
+        for (const inp of document.querySelectorAll('.bca-unalloc-amt')) {
+          const val = inp.value.trim();
+          if (!val) continue;
+          const amt = Number(val);
+          const recId = inp.dataset.recId;
+          const rec = DATA.retail.costRecords.find((r) => r.id === recId);
+          if (!rec) continue;
+          if (!Number.isFinite(amt) || amt <= 0) { showErr(`记录 ${recId} 认领金额须大于 0。`); return; }
+          const maxAmt = costTransferableMax(rec, billId);
+          if (amt > maxAmt + 0.001) {
+            showErr(`记录 ${recId} 认领金额不可超过可认领上限 ${formatMoney(maxAmt)}。`);
+            return;
+          }
+          toLink.push({ rec, amt });
         }
-        toTransfer.push({ rec, srcBillId, amt });
+        if (toLink.length === 0) { showErr('请至少为一条未分配成本填写认领金额。'); return; }
+        let total = 0;
+        for (const { rec, amt } of toLink) {
+          rec.claimed = (rec.claimed || 0) + amt;
+          rec.linkedBizBillId = billId;
+          total += amt;
+          appendCostChangeAudit({
+            recordId: rec.id,
+            action: '转入成本（从未分配认领）',
+            detail: `从未分配成本认领 ${formatMoney(amt)} → 账单 ${billId}`,
+          });
+        }
+        toast('转入成功', `已从 ${toLink.length} 条未分配成本认领合计 ${formatMoney(total)} 至账单 ${billId}。`);
+      } else {
+        const toTransfer = [];
+        for (const inp of document.querySelectorAll('.bca-rec-amt')) {
+          const val = inp.value.trim();
+          if (!val) continue;
+          const amt = Number(val);
+          const recId = inp.dataset.recId;
+          const srcBillId = Number(inp.dataset.srcBillId);
+          const rec = DATA.retail.costRecords.find((r) => r.id === recId);
+          if (!rec) continue;
+          if (!Number.isFinite(amt) || amt <= 0) { showErr(`记录 ${recId} 划拨金额须大于 0。`); return; }
+          if (amt > rec.claimed + 0.001) {
+            showErr(`记录 ${recId} 划拨金额（${formatMoney(amt)}）超过该记录可划拨（${formatMoney(rec.claimed)}）。`);
+            return;
+          }
+          toTransfer.push({ rec, srcBillId, amt });
+        }
+        if (toTransfer.length === 0) { showErr('请至少为一条成本记录填写划拨金额。'); return; }
+        let total = 0;
+        for (const { rec, srcBillId, amt } of toTransfer) {
+          const moved = transferCostToBill(rec, amt, billId);
+          total += amt;
+          appendCostChangeAudit({
+            recordId: rec.id,
+            action: '转入成本（跨账单·按记录）',
+            detail: `从账单 ${srcBillId} 划拨 ${formatMoney(amt)} → 账单 ${billId}${moved !== rec ? `（拆分新记录 ${moved.id}）` : '（整单改链）'}`,
+          });
+        }
+        toast('转入成功', `已按 ${toTransfer.length} 条成本记录转入合计 ${formatMoney(total)} 至账单 ${billId}。`);
       }
-      if (toTransfer.length === 0) { showErr('请至少为一条成本单据填写划拨金额。'); return; }
-      let total = 0;
-      for (const { rec, srcBillId, amt } of toTransfer) {
-        const moved = transferCostToBill(rec, amt, billId);
-        total += amt;
-        appendCostChangeAudit({
-          recordId: rec.id,
-          action: '转入成本（跨账单·按单据）',
-          detail: `从账单 ${srcBillId} 划拨 ${formatMoney(amt)} → 账单 ${billId}${moved !== rec ? `（拆分新单据 ${moved.id}）` : '（整单改链）'}`,
-        });
-      }
-      toast('转入成功', `已按 ${toTransfer.length} 条成本单据转入合计 ${formatMoney(total)} 至账单 ${billId}。`);
       closeModal();
       document.getElementById('drawer-body').innerHTML = BizBillDetailHtml(String(billId));
       render();
@@ -1595,38 +1688,14 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // ── 业务账单详情：修改成本关联（转入 / 转出） ───────────────────────────────
+  // ── 业务账单详情：逐笔转出成本 ─────────────────────────────────────────────
   if (action === 'rtlBillModifyCost' || action === 'rtlBillAdjustClaimed') {
     const recId = el.dataset.recordId || '';
     const billId = Number(el.dataset.billId || '');
-    const initialTab = el.dataset.mode === 'out' ? 'out' : 'in';
     const rec = DATA.retail.costRecords.find(r => r.id === recId);
     if (!rec) { toast('提示', '未找到成本记录。'); return; }
     const bizBill = DATA.retail.bizBills.find(b => b.id === billId);
     if (bizBill?.status === '已同步') { toast('提示', '账单已提交，不可修改。'); return; }
-
-    const borrowSources = getBillSourcesForCostAdd(bizBill, billId).flatMap((sb) =>
-      getLinkedCostRecords(sb.id)
-        .filter((r) => !isRecordFinanceLocked(r) && (r.claimed || 0) > 0)
-        .map((r) => ({ srcBill: sb, srcRec: r }))
-    );
-    const tabStyle = (active) => `padding:8px 14px;cursor:pointer;font-size:13px;border:none;background:none;border-bottom:2px solid ${active ? 'var(--accent)' : 'transparent'};color:${active ? 'var(--accent)' : 'var(--muted)'};font-weight:${active ? '600' : '400'};`;
-
-    const borrowRowsHtml = borrowSources.length > 0
-      ? borrowSources.map(({ srcBill: sb, srcRec: sr }) => {
-          const shortName = (sb.name || '').length > 24 ? sb.name.slice(0, 24) + '…' : (sb.name || '');
-          return `<tr>
-            <td style="padding:6px 8px;font-size:12px;color:var(--muted)"><b>${sb.id}</b><br><span title="${escapeHtml(sb.name || '')}" style="font-size:11px">${escapeHtml(shortName)}</span></td>
-            <td style="padding:6px 8px;font-size:12px;color:var(--muted)">${escapeHtml(sr.id)}</td>
-            <td style="padding:6px 8px">${escapeHtml(sr.month)}<br><span style="font-size:11px;color:var(--muted)">${escapeHtml(sr.entity || '')}</span></td>
-            <td style="padding:6px 8px;text-align:right;font-weight:600;color:var(--success)">${escapeHtml(formatMoney(sr.claimed))}</td>
-            <td style="padding:6px 8px">
-              <input type="number" class="input bm-in-borrow-amt" data-rec-id="${escapeHtml(sr.id)}" data-src-bill-id="${sb.id}"
-                min="0" max="${sr.claimed}" step="0.01" style="width:110px" placeholder="划拨金额" />
-            </td>
-          </tr>`;
-        }).join('')
-      : `<tr><td colspan="5" style="padding:12px;color:var(--muted)">同客户下暂无其他未提交至 PMS 且有关联成本的业务账单</td></tr>`;
 
     const targetBills = DATA.retail.bizBills.filter(
       (b) => customerMatches(b.customer, bizBill.customer) && !billIdEq(b.id, billId) && b.status !== '已同步'
@@ -1636,152 +1705,59 @@ document.addEventListener('click', (e) => {
       : `<option value="">— 暂无可选目标账单 —</option>`;
 
     openModal({
-      title: `${initialTab === 'out' ? '转出成本' : '转入成本'} · ${escapeHtml(recId)}`,
+      title: `转出成本 · ${escapeHtml(recId)}`,
       bodyHtml: `
         <div class="callout callout-info" style="margin-bottom:12px;font-size:13px">
-          成本记录 <b>${escapeHtml(recId)}</b>&nbsp;·&nbsp;月份：<b>${escapeHtml(rec.month)}</b>&nbsp;·&nbsp;
+          成本记录ID <b>${escapeHtml(recId)}</b>&nbsp;·&nbsp;月份：<b>${escapeHtml(rec.month)}</b>&nbsp;·&nbsp;
           实际成本：<b>${escapeHtml(formatMoney(rec.actual))}</b>&nbsp;·&nbsp;
           本单关联：<b>${escapeHtml(formatMoney(rec.claimed))}</b>
         </div>
-        <div style="display:flex;border-bottom:1px solid var(--border);margin-bottom:14px">
-          <button type="button" class="bm-tab" data-bm-tab="in" style="${tabStyle(initialTab === 'in')}">转入成本</button>
-          <button type="button" class="bm-tab" data-bm-tab="out" style="${tabStyle(initialTab === 'out')}">转出成本</button>
+        <div style="font-size:13px;color:var(--muted);margin-bottom:10px;line-height:1.6">
+          将本条成本记录在本账单的关联金额逐笔转出，选择目标账单接收后确认。转出后该金额将从本账单释放并转入目标账单。
         </div>
-
-        <div id="bm-panel-in" style="${initialTab === 'in' ? '' : 'display:none'}">
-          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px">从其他业务账单按单据转入</div>
-          <div style="font-size:13px;color:var(--muted);margin-bottom:8px;line-height:1.6">
-            从同客户、未提交至 PMS 且已关联成本的其他业务账单中按<b>具体成本单据</b>划拨；
-            减少对方单据关联额，并增加到本账单对 <b>${escapeHtml(recId)}</b> 的关联额。
-            来源含多个月份或实体时，请逐笔填写划拨金额。
+        <div style="display:flex;flex-direction:column;gap:10px">
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="page-subtitle" style="white-space:nowrap">目标账单</span>
+            <select class="select" id="bm-out-target" style="flex:1;min-width:200px">
+              <option value="">— 请选择 —</option>${targetOpts}
+            </select>
           </div>
-          <div class="table-wrap" style="max-height:220px;overflow-y:auto;margin-bottom:8px">
-            <table>
-              <thead><tr><th>来源账单</th><th>成本单据</th><th>月份 · 实体</th><th>可划拨</th><th>划拨金额</th></tr></thead>
-              <tbody>${borrowRowsHtml}</tbody>
-            </table>
-          </div>
-          <div style="font-size:13px">划拨合计：<b id="bm-in-borrow-sum">${formatMoney(0)}</b></div>
-          ${!borrowSources.length ? `<div class="callout callout-warning" style="margin-top:10px;font-size:12px">暂无可用转入来源。</div>` : ''}
-        </div>
-
-        <div id="bm-panel-out" style="${initialTab === 'out' ? '' : 'display:none'}">
-          <div style="font-size:13px;color:var(--muted);margin-bottom:10px;line-height:1.6">
-            将本账单当前关联的部分金额逐笔转出，选择目标账单接收后确认。转出后该金额将从本账单释放并转入目标账单。
-          </div>
-          <div style="display:flex;flex-direction:column;gap:10px">
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span class="page-subtitle" style="white-space:nowrap">目标账单</span>
-              <select class="select" id="bm-out-target" style="flex:1;min-width:200px">
-                <option value="">— 请选择 —</option>${targetOpts}
-              </select>
-            </div>
-            <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-              <span class="page-subtitle">转出金额</span>
-              <input class="input" id="bm-out-amt" type="number" min="0" max="${rec.claimed}" step="0.01"
-                placeholder="0.00" style="width:160px" />
-              <span class="page-subtitle" style="color:var(--muted)">元（上限本单关联额 ${escapeHtml(formatMoney(rec.claimed))}）</span>
-            </div>
+          <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+            <span class="page-subtitle">转出金额</span>
+            <input class="input" id="bm-out-amt" type="number" min="0" max="${rec.claimed}" step="0.01"
+              placeholder="0.00" style="width:160px" />
+            <span class="page-subtitle" style="color:var(--muted)">元（上限本单关联额 ${escapeHtml(formatMoney(rec.claimed))}）</span>
           </div>
         </div>
         <div id="bm-err" style="display:none;color:var(--danger);font-size:13px;margin-top:10px"></div>`,
       footerHtml: `
         <button class="btn" id="bm-cancel">取消</button>
-        <button class="btn btn-primary" id="bm-ok">确认</button>`,
+        <button class="btn btn-primary" id="bm-ok">确认转出</button>`,
     });
-
-    // tab 切换
-    document.querySelectorAll('.bm-tab').forEach(btn => {
-      btn.addEventListener('click', () => {
-        const tab = btn.dataset.bmTab;
-        document.getElementById('bm-panel-in').style.display = tab === 'in' ? '' : 'none';
-        document.getElementById('bm-panel-out').style.display = tab === 'out' ? '' : 'none';
-        document.querySelectorAll('.bm-tab').forEach(b => {
-          const a = b.dataset.bmTab === tab;
-          b.style.borderBottom = `2px solid ${a ? 'var(--accent)' : 'transparent'}`;
-          b.style.color = a ? 'var(--accent)' : 'var(--muted)';
-          b.style.fontWeight = a ? '600' : '400';
-        });
-      });
-    });
-
-    const updateBorrowSum = () => {
-      let sum = 0;
-      document.querySelectorAll('.bm-in-borrow-amt').forEach((inp) => {
-        const v = Number(inp.value || 0);
-        if (Number.isFinite(v) && v > 0) sum += v;
-      });
-      const el = document.getElementById('bm-in-borrow-sum');
-      if (el) el.textContent = formatMoney(sum);
-    };
-    document.querySelectorAll('.bm-in-borrow-amt').forEach((inp) => {
-      inp.addEventListener('input', updateBorrowSum);
-    });
-    updateBorrowSum();
 
     document.getElementById('bm-cancel')?.addEventListener('click', closeModal);
     document.getElementById('bm-ok')?.addEventListener('click', () => {
       const errEl = document.getElementById('bm-err');
       if (errEl) { errEl.style.display = 'none'; errEl.textContent = ''; }
       const showErr = (msg) => { if (errEl) { errEl.style.display = 'block'; errEl.textContent = msg; } };
-      const inPanelVisible = document.getElementById('bm-panel-in')?.style.display !== 'none';
 
-      if (inPanelVisible) {
-        const toBorrow = [];
-        for (const inp of document.querySelectorAll('.bm-in-borrow-amt')) {
-          const val = inp.value.trim();
-          if (!val) continue;
-          const amt = Number(val);
-          const srcRecId = inp.dataset.recId;
-          const srcBillId = Number(inp.dataset.srcBillId);
-          const srcRec = DATA.retail.costRecords.find((r) => r.id === srcRecId);
-          if (!srcRec) continue;
-          if (!Number.isFinite(amt) || amt <= 0) { showErr(`单据 ${srcRecId} 划拨金额须大于 0。`); return; }
-          if (amt > srcRec.claimed + 0.001) {
-            showErr(`单据 ${srcRecId} 划拨金额（${formatMoney(amt)}）超过该单据可划拨（${formatMoney(srcRec.claimed)}）。`);
-            return;
-          }
-          toBorrow.push({ srcRec, srcBillId, amt });
-        }
-        if (toBorrow.length === 0) {
-          showErr('请至少为一条来源成本单据填写划拨金额。');
-          return;
-        }
-        let added = 0;
-        for (const { srcRec, srcBillId, amt } of toBorrow) {
-          srcRec.claimed -= amt;
-          if (srcRec.claimed <= 0.001) { srcRec.claimed = 0; srcRec.linkedBizBillId = null; }
-          appendCostChangeAudit({ recordId: srcRec.id, action: '转入成本（源单据）', detail: `从账单 ${srcBillId} 按单据转出 ${formatMoney(amt)} → 账单 ${billId} · ${recId}` });
-          rec.claimed += amt;
-          added += amt;
-          appendCostChangeAudit({ recordId: recId, action: '转入成本（接收）', detail: `从账单 ${srcBillId} 单据 ${srcRec.id} 接收 ${formatMoney(amt)} → 账单 ${billId}` });
-        }
-        rec.linkedBizBillId = billId;
-        toast('已转入', `成本记录 ${recId} 已向账单 ${billId} 转入合计 ${formatMoney(added)}。`);
-      } else {
-        // 转出：逐笔（本条成本记录）转出至目标账单，目标账单实际接收
-        const targetBillId = Number(document.getElementById('bm-out-target')?.value || 0);
-        const amt = Number(document.getElementById('bm-out-amt')?.value || 0);
-        if (!targetBillId) { showErr('请选择接收的目标账单。'); return; }
-        if (!Number.isFinite(amt) || amt <= 0) { showErr('请输入大于 0 的转出金额。'); return; }
-        if (amt > rec.claimed) { showErr(`转出金额（${formatMoney(amt)}）不可超过本单关联额（${formatMoney(rec.claimed)}）。`); return; }
-        const prevClaimed = rec.claimed;
-        const moved = transferCostToBill(rec, amt, targetBillId);
-        appendCostChangeAudit({
-          recordId: recId,
-          action: '转出成本',
-          detail: `账单 ${billId} → 目标账单 ${targetBillId}：转出 ${formatMoney(amt)}（${moved !== rec ? `拆分新单据 ${moved.id}` : '整单改链'}），本单关联额 ${formatMoney(prevClaimed)} → ${formatMoney(moved !== rec ? rec.claimed : 0)}`,
-        });
-        toast('已转出', `已从账单 ${billId} 向账单 ${targetBillId} 转出 ${formatMoney(amt)}，目标账单已接收。`);
-      }
+      const targetBillId = Number(document.getElementById('bm-out-target')?.value || 0);
+      const amt = Number(document.getElementById('bm-out-amt')?.value || 0);
+      if (!targetBillId) { showErr('请选择接收的目标账单。'); return; }
+      if (!Number.isFinite(amt) || amt <= 0) { showErr('请输入大于 0 的转出金额。'); return; }
+      if (amt > rec.claimed) { showErr(`转出金额（${formatMoney(amt)}）不可超过本单关联额（${formatMoney(rec.claimed)}）。`); return; }
+      const prevClaimed = rec.claimed;
+      const moved = transferCostToBill(rec, amt, targetBillId);
+      appendCostChangeAudit({
+        recordId: recId,
+        action: '转出成本',
+        detail: `账单 ${billId} → 目标账单 ${targetBillId}：转出 ${formatMoney(amt)}（${moved !== rec ? `拆分新记录 ${moved.id}` : '整单改链'}），本单关联额 ${formatMoney(prevClaimed)} → ${formatMoney(moved !== rec ? rec.claimed : 0)}`,
+      });
+      toast('已转出', `已从账单 ${billId} 向账单 ${targetBillId} 转出 ${formatMoney(amt)}，目标账单已接收。`);
       closeModal();
       document.getElementById('drawer-body').innerHTML = BizBillDetailHtml(String(billId));
       render();
     });
-    // Keep old action name as alias — handled by the same block above
-    if (action === 'rtlBillAdjustClaimed') {
-      // already handled above, just return
-    }
     return;
   }
 

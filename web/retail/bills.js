@@ -65,6 +65,22 @@ export function getCostSourcesForBillAdd(bizBill, billId) {
   });
 }
 
+/** 「转入成本」— 从未分配成本（未关联业务账单的可认领余量） */
+export function getUnallocatedCostSources(bizBill, billId) {
+  return DATA.retail.costRecords.filter((r) => {
+    if (isRecordFinanceLocked(r)) return false;
+    if (!customerMatches(r.customer, bizBill.customer)) return false;
+    if (r.linkedBizBillId != null) return false;
+    return costTransferableMax(r, billId) > 0.01;
+  });
+}
+
+/** 截止当日成本（当月动态抓取至 T-1；历史月等于实际成本） */
+export function getCostAsOfToday(record) {
+  if (record?.costAsOfToday != null) return record.costAsOfToday;
+  return record?.actual ?? 0;
+}
+
 /** 「转入成本」— 从其他业务账单可选列表 */
 export function getBillSourcesForCostAdd(bizBill, billId) {
   return DATA.retail.bizBills.filter(
@@ -417,7 +433,7 @@ export function BizBillDetailHtml(billId) {
               <li>当前业务账单关联成本<b>大于本期结算</b>时，可转出至其他业务账单（转出按逐笔成本记录操作，选择目标业务账单接收）。</li>
             </ul>
             <div style="margin-top:6px;font-size:12px;color:var(--muted)">
-              样例数据：账单 <b>12096</b>（暂无成本）可点「转入成本」，从账单 <b>12110</b>（成本来自 2026-04 / 2026-05 两个月份、方便面 / 水饮两个实体）按单据划拨；账单 <b>12110</b> 关联成本大于本期结算，可在成本记录上逐笔「转出成本」。
+              样例数据：账单 <b>12096</b> 可点「转入成本」→「从未分配成本」认领 <b>RTL-012</b>，或从账单 <b>12110</b> 按成本记录ID逐笔划拨；账单 <b>12110</b> 成本超出结算时，在已关联记录上逐笔「转出成本」。
             </div>
           </div>
 
@@ -452,17 +468,14 @@ export function BizBillDetailHtml(billId) {
 
           <!-- 已关联成本记录列表 -->
           <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px">
-            已关联成本记录${isLocked ? '（账单已提交，只读）' : '（未同步前均可修改或删除关联）'}
+            已关联成本记录${isLocked ? '（账单已提交，只读）' : '（未同步前可逐笔转出；转入请使用右上角「转入成本」）'}
           </div>
           ${linkedRecords.length
             ? Table(
-                ['成本记录', '月份', '客户 · 实体', '实际成本', '已分配成本', '本单关联', '操作'],
+                ['成本记录ID', '月份', '客户 · 实体', '实际成本', '已分配成本', '本单关联', '操作'],
                 linkedRecords.map(r => {
                   const ops = !isLocked
-                    ? `<div style="display:flex;gap:8px;white-space:nowrap">
-                        <a class="link" data-action="rtlBillModifyCost" data-mode="in" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">转入成本</a>
-                        <a class="link" data-action="rtlBillModifyCost" data-mode="out" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">转出成本</a>
-                      </div>`
+                    ? `<a class="link" data-action="rtlBillModifyCost" data-mode="out" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">转出成本</a>`
                     : '—';
                   return [
                     `<span style="font-size:12px;color:var(--muted)">${escapeHtml(r.id)}</span>`,
