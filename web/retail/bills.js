@@ -53,7 +53,7 @@ export function costTransferableMax(record, billId) {
   return claimed;
 }
 
-/** 「新增成本单」— 从成本管理可选列表 */
+/** 从成本管理可选列表（保留备用） */
 export function getCostSourcesForBillAdd(bizBill, billId) {
   return DATA.retail.costRecords.filter((r) => {
     if (isRecordFinanceLocked(r)) return false;
@@ -65,7 +65,7 @@ export function getCostSourcesForBillAdd(bizBill, billId) {
   });
 }
 
-/** 「新增成本单」— 从其他业务账单可选列表 */
+/** 「转入成本」— 从其他业务账单可选列表 */
 export function getBillSourcesForCostAdd(bizBill, billId) {
   return DATA.retail.bizBills.filter(
     (b) =>
@@ -405,9 +405,21 @@ export function BizBillDetailHtml(billId) {
               ? `<span class="pill pill-success" style="margin-left:8px">✓ 匹配</span>`
               : `<span class="pill pill-danger" style="margin-left:8px">⚠ 差额</span>`}
           <div style="flex:1"></div>
-          ${!isLocked ? `<button class="btn btn-sm" data-action="openBillCostAdd" data-bill-id="${b.id}">新增成本单</button>` : ''}
+          ${!isLocked ? `<button class="btn btn-sm" data-action="openBillCostAdd" data-bill-id="${b.id}">转入成本</button>` : ''}
         </div>
         <div class="card-body">
+
+          <!-- 转入/转出说明 -->
+          <div class="callout callout-info" style="margin-bottom:12px;font-size:13px">
+            <div class="callout-title">成本转入 / 转出说明</div>
+            <ul style="margin:4px 0 0;padding-left:18px;line-height:1.7">
+              <li>当前业务账单<b>无成本</b>时，可从其他<b>未提交至 PMS</b> 的业务账单转入成本（如果目标业务账单下成本来自多个月份或实体，需要根据具体单据填写划拨金额）。</li>
+              <li>当前业务账单关联成本<b>大于本期结算</b>时，可转出至其他业务账单（转出按逐笔成本记录操作，选择目标业务账单接收）。</li>
+            </ul>
+            <div style="margin-top:6px;font-size:12px;color:var(--muted)">
+              样例数据：账单 <b>12096</b>（暂无成本）可点「转入成本」，从账单 <b>12110</b>（成本来自 2026-04 / 2026-05 两个月份、方便面 / 水饮两个实体）按单据划拨；账单 <b>12110</b> 关联成本大于本期结算，可在成本记录上逐笔「转出成本」。
+            </div>
+          </div>
 
           <!-- 金额横幅：凭证 vs 已关联 vs 差额 -->
           <div class="cost-match-banner">
@@ -430,10 +442,10 @@ export function BizBillDetailHtml(billId) {
                   : `成本不足 ${formatMoney(Math.abs(diffAmt))}`}
               </div>
               <div class="cost-match-cell-sub">
-                ${hasNoLink ? '点击右上角「新增成本单」开始'
+                ${hasNoLink ? '点击右上角「转入成本」开始'
                   : isMatch ? '两端金额一致，可正常提交'
-                  : diffAmt > 0 ? '成本 > 凭证，可修改已关联成本转出多余部分'
-                  : '成本 < 凭证，新增成本单或修改已关联成本转入补足差额'}
+                  : diffAmt > 0 ? '成本 > 凭证，可对已关联成本逐笔「转出成本」至其他业务账单'
+                  : '成本 < 凭证，可「转入成本」补足差额'}
               </div>
             </div>
           </div>
@@ -447,9 +459,9 @@ export function BizBillDetailHtml(billId) {
                 ['成本记录', '月份', '客户 · 实体', '实际成本', '已分配成本', '本单关联', '操作'],
                 linkedRecords.map(r => {
                   const ops = !isLocked
-                    ? `<div style="display:flex;gap:5px;white-space:nowrap">
-                        <a class="link" data-action="rtlBillModifyCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">修改</a>
-                        <a class="link" style="color:var(--danger)" data-action="rtlBillDeleteCost" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">删除</a>
+                    ? `<div style="display:flex;gap:8px;white-space:nowrap">
+                        <a class="link" data-action="rtlBillModifyCost" data-mode="in" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">转入成本</a>
+                        <a class="link" data-action="rtlBillModifyCost" data-mode="out" data-record-id="${escapeHtml(r.id)}" data-bill-id="${b.id}">转出成本</a>
                       </div>`
                     : '—';
                   return [
@@ -464,7 +476,7 @@ export function BizBillDetailHtml(billId) {
                 })
               )
             : `<div style="padding:8px 0;color:var(--muted);font-size:13px">
-                暂未关联成本记录。点击右上角「新增成本单」，从成本管理或其他业务账单中选择并填写划拨金额。
+                暂未关联成本记录。点击右上角「转入成本」，从其他未提交至 PMS 的业务账单已关联成本中转入并填写划拨金额。
               </div>`}
 
         </div>

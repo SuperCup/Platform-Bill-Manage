@@ -42,11 +42,7 @@ export function mergeRetailCostQuery(overrides = {}) {
 }
 
 function linkedBillCell(r) {
-  if (!r.linkedBizBillId) {
-    return r.pending > 0
-      ? `<a class="link" data-action="openRetailAllocate" data-record-id="${escapeHtml(r.id)}" style="font-size:12px">选择业务账单</a>`
-      : '—';
-  }
+  if (!r.linkedBizBillId) return '—';
   const bill = DATA.retail.bizBills.find(b => b.id === r.linkedBizBillId);
   const name  = bill ? bill.name : String(r.linkedBizBillId);
   const short = name.length > 28 ? name.slice(0, 28) + '…' : name;
